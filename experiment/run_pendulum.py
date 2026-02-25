@@ -149,6 +149,30 @@ def save_checkpoint(
     return path
 
 
+def log_checkpoint_artifact(
+    cfg: "ExperimentConfig",
+    ckpt_path: Path,
+    *,
+    aliases: Tuple[str, ...],
+    metadata: Dict[str, Any],
+) -> None:
+    """
+    Upload a checkpoint file to W&B Artifacts.
+
+    This keeps large binary files out of Git while still versioning them in W&B.
+    """
+    if not cfg.use_wandb or not getattr(cfg, "wandb_artifacts", False):
+        return
+    if wandb is None or wandb.run is None:
+        return
+
+    # One artifact "stream" per run; each upload creates a new artifact version.
+    art_name = f"{wandb.run.name}-ckpt"
+    artifact = wandb.Artifact(name=art_name, type="model", metadata=metadata)
+    artifact.add_file(str(ckpt_path), name=ckpt_path.name)
+    wandb.log_artifact(artifact, aliases=list(aliases))
+
+
 @dataclass
 class ExperimentConfig:
     algo: str = "sac"  # sac | mbpo | dreamer
@@ -188,6 +212,7 @@ class ExperimentConfig:
     wandb_entity: Optional[str] = None
     wandb_tags: Tuple[str, ...] = ()
     wandb_group: Optional[str] = None
+    wandb_artifacts: bool = False
 
 
 def parse_args() -> ExperimentConfig:
@@ -222,6 +247,7 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--wandb-entity", type=str, default=None)
     p.add_argument("--wandb-tags", type=str, default="")
     p.add_argument("--wandb-group", type=str, default=None)
+    p.add_argument("--wandb-artifacts", action="store_true")
 
     args = p.parse_args()
     seeds = tuple(int(s.strip()) for s in args.seeds.split(",") if s.strip())
@@ -252,6 +278,7 @@ def parse_args() -> ExperimentConfig:
         wandb_entity=args.wandb_entity,
         wandb_tags=tags,
         wandb_group=args.wandb_group,
+        wandb_artifacts=bool(args.wandb_artifacts),
     )
 
 
@@ -371,7 +398,21 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                     "env_name": cfg.env_name,
                     "agent": agent.get_state(),
                 }
-                save_checkpoint(ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload)
+                ckpt_path = save_checkpoint(
+                    ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload
+                )
+                log_checkpoint_artifact(
+                    cfg,
+                    ckpt_path,
+                    aliases=("latest", f"converged-{abs(int(cfg.convergence_threshold))}"),
+                    metadata={
+                        "algo": "sac",
+                        "seed": seed,
+                        "step": step,
+                        "env_name": cfg.env_name,
+                        "threshold": cfg.convergence_threshold,
+                    },
+                )
 
         # regular step checkpoint
         if cfg.checkpoint_every_steps and step > 0 and step % cfg.checkpoint_every_steps == 0:
@@ -382,7 +423,13 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 "env_name": cfg.env_name,
                 "agent": agent.get_state(),
             }
-            save_checkpoint(ckpt_root, f"step_{format_step_k(step)}.pt", payload)
+            ckpt_path = save_checkpoint(ckpt_root, f"step_{format_step_k(step)}.pt", payload)
+            log_checkpoint_artifact(
+                cfg,
+                ckpt_path,
+                aliases=("latest", f"step-{format_step_k(step)}"),
+                metadata={"algo": "sac", "seed": seed, "step": step, "env_name": cfg.env_name},
+            )
 
     # final checkpoint
     payload = {
@@ -392,7 +439,13 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "env_name": cfg.env_name,
         "agent": agent.get_state(),
     }
-    save_checkpoint(ckpt_root, "final_stage.pt", payload)
+    ckpt_path = save_checkpoint(ckpt_root, "final_stage.pt", payload)
+    log_checkpoint_artifact(
+        cfg,
+        ckpt_path,
+        aliases=("latest", "final"),
+        metadata={"algo": "sac", "seed": seed, "step": cfg.train_max_steps, "env_name": cfg.env_name},
+    )
 
     # final evaluation summary
     asymptotic = None
@@ -514,7 +567,22 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                     "horizon": cfg.horizon,
                     "agent": agent.get_state(),
                 }
-                save_checkpoint(ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload)
+                ckpt_path = save_checkpoint(
+                    ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload
+                )
+                log_checkpoint_artifact(
+                    cfg,
+                    ckpt_path,
+                    aliases=("latest", f"converged-{abs(int(cfg.convergence_threshold))}"),
+                    metadata={
+                        "algo": "mbpo",
+                        "seed": seed,
+                        "step": step,
+                        "env_name": cfg.env_name,
+                        "horizon": cfg.horizon,
+                        "threshold": cfg.convergence_threshold,
+                    },
+                )
 
         if cfg.checkpoint_every_steps and step > 0 and step % cfg.checkpoint_every_steps == 0:
             payload = {
@@ -525,7 +593,19 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 "horizon": cfg.horizon,
                 "agent": agent.get_state(),
             }
-            save_checkpoint(ckpt_root, f"step_{format_step_k(step)}.pt", payload)
+            ckpt_path = save_checkpoint(ckpt_root, f"step_{format_step_k(step)}.pt", payload)
+            log_checkpoint_artifact(
+                cfg,
+                ckpt_path,
+                aliases=("latest", f"step-{format_step_k(step)}"),
+                metadata={
+                    "algo": "mbpo",
+                    "seed": seed,
+                    "step": step,
+                    "env_name": cfg.env_name,
+                    "horizon": cfg.horizon,
+                },
+            )
 
     payload = {
         "algo": "mbpo",
@@ -535,7 +615,19 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "horizon": cfg.horizon,
         "agent": agent.get_state(),
     }
-    save_checkpoint(ckpt_root, "final_stage.pt", payload)
+    ckpt_path = save_checkpoint(ckpt_root, "final_stage.pt", payload)
+    log_checkpoint_artifact(
+        cfg,
+        ckpt_path,
+        aliases=("latest", "final"),
+        metadata={
+            "algo": "mbpo",
+            "seed": seed,
+            "step": cfg.train_max_steps,
+            "env_name": cfg.env_name,
+            "horizon": cfg.horizon,
+        },
+    )
 
     asymptotic = None
     if len(eval_returns) > 0:
@@ -647,7 +739,22 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                     "horizon": cfg.horizon,
                     "agent": agent.get_state(),
                 }
-                save_checkpoint(ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload)
+                ckpt_path = save_checkpoint(
+                    ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload
+                )
+                log_checkpoint_artifact(
+                    cfg,
+                    ckpt_path,
+                    aliases=("latest", f"converged-{abs(int(cfg.convergence_threshold))}"),
+                    metadata={
+                        "algo": "dreamer",
+                        "seed": seed,
+                        "step": step,
+                        "env_name": cfg.env_name,
+                        "horizon": cfg.horizon,
+                        "threshold": cfg.convergence_threshold,
+                    },
+                )
 
         if cfg.checkpoint_every_steps and step > 0 and step % cfg.checkpoint_every_steps == 0:
             payload = {
@@ -658,7 +765,19 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 "horizon": cfg.horizon,
                 "agent": agent.get_state(),
             }
-            save_checkpoint(ckpt_root, f"step_{format_step_k(step)}.pt", payload)
+            ckpt_path = save_checkpoint(ckpt_root, f"step_{format_step_k(step)}.pt", payload)
+            log_checkpoint_artifact(
+                cfg,
+                ckpt_path,
+                aliases=("latest", f"step-{format_step_k(step)}"),
+                metadata={
+                    "algo": "dreamer",
+                    "seed": seed,
+                    "step": step,
+                    "env_name": cfg.env_name,
+                    "horizon": cfg.horizon,
+                },
+            )
 
     payload = {
         "algo": "dreamer",
@@ -668,7 +787,19 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "horizon": cfg.horizon,
         "agent": agent.get_state(),
     }
-    save_checkpoint(ckpt_root, "final_stage.pt", payload)
+    ckpt_path = save_checkpoint(ckpt_root, "final_stage.pt", payload)
+    log_checkpoint_artifact(
+        cfg,
+        ckpt_path,
+        aliases=("latest", "final"),
+        metadata={
+            "algo": "dreamer",
+            "seed": seed,
+            "step": cfg.train_max_steps,
+            "env_name": cfg.env_name,
+            "horizon": cfg.horizon,
+        },
+    )
 
     asymptotic = None
     if len(eval_returns) > 0:

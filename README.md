@@ -60,6 +60,12 @@ Disable W&B entirely:
 python experiment/run_pendulum.py --algo sac --seeds 1 --no-wandb
 ```
 
+Upload checkpoints to W&B Artifacts (recommended for Colab runs):
+
+```bash
+python experiment/run_pendulum.py --algo sac --seeds 1,2,3,4,5 --wandb-artifacts
+```
+
 ### Unified evaluation protocol (all algorithms)
 
 All algorithms use the same logic in `experiment/run_pendulum.py`:
