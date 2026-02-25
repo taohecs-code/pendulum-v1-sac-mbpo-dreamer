@@ -343,9 +343,12 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             action = agent.select_action(state, deterministic=False)
 
         next_state, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
+        # IMPORTANT: for learning/bootstrapping, treat only true environment termination as done.
+        # Time-limit truncation should NOT cut off bootstrapping targets.
+        done_for_learning = float(terminated)
+        episode_end = terminated or truncated
 
-        replay_buffer.add(state, action, reward, next_state, float(done))
+        replay_buffer.add(state, action, reward, next_state, done_for_learning)
 
         state = next_state
         ep_steps += 1
@@ -357,7 +360,7 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         else:
             loss_dict = {}
 
-        if done or ep_steps >= cfg.episode_max_steps:
+        if episode_end or ep_steps >= cfg.episode_max_steps:
             state, _ = env.reset()
             ep_steps = 0
 
@@ -547,9 +550,10 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             action = agent.select_action(state, deterministic=False)
 
         next_state, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
+        done_for_learning = float(terminated)
+        episode_end = terminated or truncated
 
-        replay_buffer.add(state, action, reward, next_state, float(done))
+        replay_buffer.add(state, action, reward, next_state, done_for_learning)
         state = next_state
         ep_steps += 1
 
@@ -579,7 +583,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             syn_losses = agent.train_policy_on_synthetic(replay_buffer, batch_size=cfg.batch_size)
             loss_dict.update({f"synthetic/{k}": v for k, v in syn_losses.items()})
 
-        if done or ep_steps >= cfg.episode_max_steps:
+        if episode_end or ep_steps >= cfg.episode_max_steps:
             state, _ = env.reset()
             ep_steps = 0
 
@@ -763,8 +767,9 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             action = agent.select_action(state, deterministic=False)
 
         next_state, reward, terminated, truncated, _ = env.step(action)
-        done = terminated or truncated
-        replay_buffer.add(state, action, reward, next_state, float(done))
+        done_for_learning = float(terminated)
+        episode_end = terminated or truncated
+        replay_buffer.add(state, action, reward, next_state, done_for_learning)
         state = next_state
         ep_steps += 1
 
@@ -784,7 +789,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             ac_losses = agent.train_actor_critic(feats, rew_seq)
             loss_dict.update(ac_losses)
 
-        if done or ep_steps >= cfg.episode_max_steps:
+        if episode_end or ep_steps >= cfg.episode_max_steps:
             state, _ = env.reset()
             ep_steps = 0
 
