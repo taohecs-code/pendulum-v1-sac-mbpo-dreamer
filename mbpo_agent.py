@@ -1,10 +1,31 @@
 """
-Minimal MBPO agent for Pendulum-v1:
+MBPO agent
+
+Core idea of MBPO: train a dynamics model on real environment transitions, then use the model to generate short
+"imagined" rollouts (synthetic transitions) and feed them to SAC for additional off-policy updates.
 
 - Policy learning: reuse SAC (actor/critic) but allow training from explicit tensors.
 - Model learning: learn an ensemble dynamics model from real transitions.
 - Data augmentation: perform synthetic rollouts from model to generate additional transitions,
   then train SAC on a mixture of real + synthetic batches.
+
+Overall order (per env step) in the runner:
+- Interact with the real environment:
+  - action = agent.select_action(...) (random actions during prefill)
+  - next_state, reward = env.step(action)
+  - replay_buffer.add(state, action, reward, next_state, done)  # real data goes into the real buffer
+- If step >= replay_prefill_steps, perform updates:
+  2.1 Real SAC update (from the real replay buffer)
+      - agent.train_policy_on_real(replay_buffer)
+  2.2 Model update (train dynamics ensemble from the real replay buffer)
+      - agent.train_model(replay_buffer)
+      - this updates ensemble.selected_model_indices (top-k selection)
+  2.3 Synthetic SAC updates (rollout happens here)
+      - agent.train_policy_on_synthetic(replay_buffer)
+      - sample start states from the real buffer: s0 = state_batch
+      - rollout_model(s0, horizon=H) generates synthetic (s, a, r, s', done)
+      - immediately run SAC updates on the synthetic batch via train_from_tensors(...)
+      - note: synthetic transitions are NOT written back to replay_buffer in this minimal implementation
 """
 
 from __future__ import annotations
@@ -21,7 +42,8 @@ from mbpo_models import DynamicsEnsemble, ModelTrainStats, train_dynamics_ensemb
 @dataclass
 class MBPOConfig:
     horizon: int = 5
-    model_ensemble_size: int = 5
+    model_ensemble_size: int = 7
+    model_top_k: int = 5
     model_hidden_dim: int = 256
     model_lr: float = 1e-3
     model_train_steps_per_env_step: int = 1
@@ -47,6 +69,7 @@ class MBPOAgent:
             action_dim=action_dim,
             ensemble_size=self.cfg.model_ensemble_size,
             hidden_dim=self.cfg.model_hidden_dim,
+            top_k_models=self.cfg.model_top_k,
         ).to(self.policy.device)
         self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.model_lr)
 
@@ -57,6 +80,11 @@ class MBPOAgent:
         return self.policy.select_action(state, deterministic=deterministic)
 
     def train_policy_on_real(self, replay_buffer, batch_size: int) -> Dict[str, float]:
+        """
+        Perform SAC updates using real environment transitions stored in the replay buffer.
+
+        Returns a Dict[str, float] of scalar losses/metrics (e.g., actor/critic losses) for logging.
+        """
         return self.policy.train(replay_buffer, batch_size=batch_size)
 
     def train_model(self, replay_buffer, batch_size: int) -> ModelTrainStats:
@@ -64,7 +92,11 @@ class MBPOAgent:
         batch = tuple(t.to(self.policy.device) for t in batch)  # type: ignore[assignment]
         stats = None
         for _ in range(max(1, int(self.cfg.model_train_steps_per_env_step))):
+            # Key knob: how many gradient steps to train the world model per real env step.
+            # Example: model_train_steps_per_env_step=5 means we train the model 5 times per env step
+            # (in this minimal implementation, on the same sampled batch).
             stats = train_dynamics_ensemble(self.model, batch, self.model_optimizer)
+        # The loop runs at least once due to max(1, ...); stats should never be None here.
         assert stats is not None
         return stats
 
@@ -80,6 +112,11 @@ class MBPOAgent:
         """
         device = self.policy.device
         s = start_states.to(device)
+
+        # These 5 lists collect per-step rollout tuples (s, a, r, s', done).
+        # We append one step per loop iteration, then concatenate into a single large batch with
+        # shapes roughly (batch_size * horizon, ...), which is fed into SACAgent.train_from_tensors(...)
+        # for synthetic updates.
         batch_states = []
         batch_actions = []
         batch_rewards = []

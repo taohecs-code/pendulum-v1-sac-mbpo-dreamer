@@ -203,6 +203,8 @@ class ExperimentConfig:
     dreamer_arch: str = "MLP"
     mbpo_model_train_steps_per_env_step: int = 1
     mbpo_synthetic_updates_per_env_step: int = 1
+    mbpo_ensemble_size: int = 7
+    mbpo_top_k: int = 5
 
     dreamer_seq_len: int = DREAMER_SEQ_LEN_DEFAULT
 
@@ -240,6 +242,8 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--dreamer-arch", type=str, default="MLP")
     p.add_argument("--mbpo-model-steps", type=int, default=1)
     p.add_argument("--mbpo-synth-updates", type=int, default=1)
+    p.add_argument("--mbpo-ensemble-size", type=int, default=7)
+    p.add_argument("--mbpo-top-k", type=int, default=5)
     p.add_argument("--dreamer-seq-len", type=int, default=DREAMER_SEQ_LEN_DEFAULT)
 
     p.add_argument("--no-wandb", action="store_true")
@@ -272,6 +276,8 @@ def parse_args() -> ExperimentConfig:
         dreamer_arch=args.dreamer_arch,
         mbpo_model_train_steps_per_env_step=args.mbpo_model_steps,
         mbpo_synthetic_updates_per_env_step=args.mbpo_synth_updates,
+        mbpo_ensemble_size=args.mbpo_ensemble_size,
+        mbpo_top_k=args.mbpo_top_k,
         dreamer_seq_len=args.dreamer_seq_len,
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,
@@ -477,6 +483,8 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         device=device,
         mbpo_cfg=MBPOConfig(
             horizon=cfg.horizon,
+            model_ensemble_size=cfg.mbpo_ensemble_size,
+            model_top_k=cfg.mbpo_top_k,
             model_train_steps_per_env_step=cfg.mbpo_model_train_steps_per_env_step,
             synthetic_updates_per_env_step=cfg.mbpo_synthetic_updates_per_env_step,
         ),
@@ -517,10 +525,16 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             loss_dict.update(
                 {
                     "model/loss": model_stats.loss,
+                    "model/nll": model_stats.nll,
                     "model/mse_next_state": model_stats.mse_next_state,
                     "model/mse_reward": model_stats.mse_reward,
+                    "model/avg_log_std": model_stats.avg_log_std,
+                    "model/epistemic_var_next_state": model_stats.epistemic_var_next_state,
+                    "model/epistemic_var_reward": model_stats.epistemic_var_reward,
                 }
             )
+            # Elite indices are a list; log as a string for readability.
+            loss_dict["model/selected_model_indices"] = str(model_stats.selected_model_indices)
 
             # synthetic SAC updates
             syn_losses = agent.train_policy_on_synthetic(replay_buffer, batch_size=cfg.batch_size)
