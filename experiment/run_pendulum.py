@@ -210,6 +210,10 @@ class ExperimentConfig:
 
     dreamer_seq_len: int = DREAMER_SEQ_LEN_DEFAULT
 
+    # SAC extras
+    sac_auto_alpha: bool = False
+    sac_target_entropy: Optional[float] = None
+
     # W&B
     use_wandb: bool = True
     wandb_project: str = "CS5180_Pendulum_MBRL"
@@ -249,6 +253,10 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--mbpo-top-k", type=int, default=5)
     p.add_argument("--dreamer-seq-len", type=int, default=DREAMER_SEQ_LEN_DEFAULT)
 
+    # SAC extras
+    p.add_argument("--sac-auto-alpha", action="store_true")
+    p.add_argument("--sac-target-entropy", type=float, default=None)
+
     p.add_argument("--no-wandb", action="store_true")
     p.add_argument("--wandb-project", type=str, default="CS5180_Pendulum_MBRL")
     p.add_argument("--wandb-entity", type=str, default=None)
@@ -283,6 +291,8 @@ def parse_args() -> ExperimentConfig:
         mbpo_ensemble_size=args.mbpo_ensemble_size,
         mbpo_top_k=args.mbpo_top_k,
         dreamer_seq_len=args.dreamer_seq_len,
+        sac_auto_alpha=bool(args.sac_auto_alpha),
+        sac_target_entropy=args.sac_target_entropy,
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
@@ -318,7 +328,13 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
 
-    agent = SACAgent(state_dim, action_dim, device=device)
+    agent = SACAgent(
+        state_dim,
+        action_dim,
+        device=device,
+        auto_alpha=cfg.sac_auto_alpha,
+        target_entropy=cfg.sac_target_entropy,
+    )
     replay_buffer = ReplayBuffer(state_dim, action_dim)
 
     # Trackers

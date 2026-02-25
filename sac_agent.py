@@ -27,6 +27,8 @@ class SACAgent:
         gamma=0.99,
         tau=0.005,
         alpha=0.2,
+        auto_alpha: bool = False,
+        target_entropy: float | None = None,
     ):
         """
         Initialize the SAC agent.
@@ -52,7 +54,10 @@ class SACAgent:
         self.lr = lr
         self.gamma = gamma
         self.tau = tau
-        self.alpha = alpha
+        self.alpha = float(alpha)
+        self.auto_alpha = bool(auto_alpha)
+        # Common default in SAC-v2: target_entropy = -|A|
+        self.target_entropy = float(target_entropy) if target_entropy is not None else -float(action_dim)
 
         self.actor = Actor(state_dim, action_dim).to(self.device)
         self.critic = Critic(state_dim, action_dim).to(self.device)
@@ -64,6 +69,20 @@ class SACAgent:
         # create optimizers for the actor and critic networks
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
+
+        # Optional: automatic entropy temperature tuning (SAC-v2)
+        # We optimize log_alpha to keep policy entropy close to target_entropy.
+        if self.auto_alpha:
+            self.log_alpha = torch.tensor(
+                float(torch.log(torch.tensor(self.alpha))),
+                device=self.device,
+                dtype=torch.float32,
+                requires_grad=True,
+            )
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
+        else:
+            self.log_alpha = None
+            self.alpha_optimizer = None
     
     def select_action(self, state, deterministic: bool = False):
         """
@@ -144,6 +163,16 @@ class SACAgent:
 
         self.actor_optimizer.step()
 
+        # (optional) update alpha to match target entropy
+        alpha_loss = None
+        if self.auto_alpha and self.alpha_optimizer is not None and self.log_alpha is not None:
+            # Use the current policy log_prob; detach so alpha update doesn't backprop into actor.
+            alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+            self.alpha = float(self.log_alpha.detach().exp().item())
+
         # ema update the target critic network
         for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
@@ -151,6 +180,7 @@ class SACAgent:
         return {
             "loss/critic": float(critic_loss.item()),
             "loss/actor": float(actor_loss.item()),
+            **({"loss/alpha": float(alpha_loss.item()), "alpha": float(self.alpha)} if alpha_loss is not None else {}),
         }
 
     def get_state(self):
@@ -161,12 +191,16 @@ class SACAgent:
             "gamma": self.gamma,
             "tau": self.tau,
             "alpha": self.alpha,
+            "auto_alpha": self.auto_alpha,
+            "target_entropy": self.target_entropy,
             "device": str(self.device),
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "critic_target": self.critic_target.state_dict(),
             "actor_optimizer": self.actor_optimizer.state_dict(),
             "critic_optimizer": self.critic_optimizer.state_dict(),
+            "log_alpha": (self.log_alpha.detach().cpu().item() if self.log_alpha is not None else None),
+            "alpha_optimizer": (self.alpha_optimizer.state_dict() if self.alpha_optimizer is not None else None),
         }
 
     def load_state(self, state):
@@ -176,9 +210,38 @@ class SACAgent:
         self.gamma = state["gamma"]
         self.tau = state["tau"]
         self.alpha = state["alpha"]
+        self.auto_alpha = state.get("auto_alpha", False)
+        self.target_entropy = state.get("target_entropy", -float(self.action_dim))
 
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])
         self.critic_target.load_state_dict(state["critic_target"])
         self.actor_optimizer.load_state_dict(state["actor_optimizer"])
         self.critic_optimizer.load_state_dict(state["critic_optimizer"])
+
+        # restore alpha tuning state if present
+        if self.auto_alpha:
+            log_alpha_val = state.get("log_alpha", None)
+            if log_alpha_val is not None:
+                self.log_alpha = torch.tensor(
+                    float(log_alpha_val),
+                    device=self.device,
+                    dtype=torch.float32,
+                    requires_grad=True,
+                )
+                self.alpha = float(self.log_alpha.detach().exp().item())
+            else:
+                # fall back to current alpha
+                self.log_alpha = torch.tensor(
+                    float(torch.log(torch.tensor(self.alpha))),
+                    device=self.device,
+                    dtype=torch.float32,
+                    requires_grad=True,
+                )
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
+            opt_state = state.get("alpha_optimizer", None)
+            if opt_state is not None:
+                self.alpha_optimizer.load_state_dict(opt_state)
+        else:
+            self.log_alpha = None
+            self.alpha_optimizer = None
