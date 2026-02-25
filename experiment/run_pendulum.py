@@ -56,6 +56,7 @@ REPLAY_PREFILL_STEPS_DEFAULT = 1_000
 BATCH_SIZE_DEFAULT = 256
 
 CONVERGENCE_THRESHOLD_DEFAULT = -150.0
+CONVERGENCE_STABLE_K_DEFAULT = 3
 ASYMPTOTIC_WINDOW_EVALS_DEFAULT = 10
 
 EVAL_EPISODES_DURING_TRAIN_DEFAULT = 5
@@ -193,6 +194,7 @@ class ExperimentConfig:
     eval_episodes_final: int = EVAL_EPISODES_FINAL_DEFAULT
     asymptotic_window_evals: int = ASYMPTOTIC_WINDOW_EVALS_DEFAULT
     convergence_threshold: float = CONVERGENCE_THRESHOLD_DEFAULT
+    convergence_stable_k: int = CONVERGENCE_STABLE_K_DEFAULT
 
     # Checkpointing
     checkpoint_dir: str = "checkpoints"
@@ -234,6 +236,7 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--eval-episodes-final", type=int, default=EVAL_EPISODES_FINAL_DEFAULT)
     p.add_argument("--asymptotic-window", type=int, default=ASYMPTOTIC_WINDOW_EVALS_DEFAULT)
     p.add_argument("--threshold", type=float, default=CONVERGENCE_THRESHOLD_DEFAULT)
+    p.add_argument("--stable-k", type=int, default=CONVERGENCE_STABLE_K_DEFAULT)
 
     p.add_argument("--checkpoint-dir", type=str, default="checkpoints")
     p.add_argument("--checkpoint-every", type=int, default=CHECKPOINT_EVERY_STEPS_DEFAULT)
@@ -270,6 +273,7 @@ def parse_args() -> ExperimentConfig:
         eval_episodes_final=args.eval_episodes_final,
         asymptotic_window_evals=args.asymptotic_window,
         convergence_threshold=args.threshold,
+        convergence_stable_k=args.stable_k,
         checkpoint_dir=args.checkpoint_dir,
         checkpoint_every_steps=args.checkpoint_every,
         horizon=args.horizon,
@@ -321,6 +325,8 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     eval_steps = []
     eval_returns = []
     convergence_step = None
+    convergence_step_stable_k = None
+    consecutive_above = 0
 
     state, _ = env.reset(seed=seed)
     ep_steps = 0
@@ -407,6 +413,17 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 ckpt_path = save_checkpoint(
                     ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload
                 )
+
+            # stable convergence: first step where we have K consecutive eval points above threshold
+            if eval_return > cfg.convergence_threshold:
+                consecutive_above += 1
+            else:
+                consecutive_above = 0
+            if (
+                convergence_step_stable_k is None
+                and consecutive_above >= int(cfg.convergence_stable_k)
+            ):
+                convergence_step_stable_k = step
                 log_checkpoint_artifact(
                     cfg,
                     ckpt_path,
@@ -454,6 +471,13 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     )
 
     # final evaluation summary
+    final_return_mean = evaluate_policy(
+        agent,
+        env_name=cfg.env_name,
+        eval_episodes=cfg.eval_episodes_final,
+        seed=seed,
+        episode_max_steps=cfg.episode_max_steps,
+    )
     asymptotic = None
     if len(eval_returns) > 0:
         window = min(cfg.asymptotic_window_evals, len(eval_returns))
@@ -461,6 +485,17 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         if wandb and wandb.run is not None:
             wandb.summary["eval/asymptotic_return"] = asymptotic
             wandb.summary["eval/convergence_step"] = convergence_step
+            wandb.summary["eval/final_return_mean"] = float(final_return_mean)
+            wandb.summary["eval/convergence_step_stable_k"] = convergence_step_stable_k
+            # Also log as a final history point for convenience.
+            wandb.log(
+                {
+                    "train/step": cfg.train_max_steps,
+                    "eval/final_return_mean": float(final_return_mean),
+                    "eval/convergence_step_stable_k": convergence_step_stable_k,
+                },
+                step=cfg.train_max_steps,
+            )
 
     return {
         "seed": seed,
@@ -468,6 +503,8 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "eval_returns": eval_returns,
         "asymptotic_return": asymptotic,
         "convergence_step": convergence_step,
+        "final_return_mean": float(final_return_mean),
+        "convergence_step_stable_k": convergence_step_stable_k,
     }
 
 
@@ -494,6 +531,8 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     eval_steps = []
     eval_returns = []
     convergence_step = None
+    convergence_step_stable_k = None
+    consecutive_above = 0
 
     state, _ = env.reset(seed=seed)
     ep_steps = 0
@@ -584,6 +623,17 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 ckpt_path = save_checkpoint(
                     ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload
                 )
+
+            # stable convergence: first step where we have K consecutive eval points above threshold
+            if eval_return > cfg.convergence_threshold:
+                consecutive_above += 1
+            else:
+                consecutive_above = 0
+            if (
+                convergence_step_stable_k is None
+                and consecutive_above >= int(cfg.convergence_stable_k)
+            ):
+                convergence_step_stable_k = step
                 log_checkpoint_artifact(
                     cfg,
                     ckpt_path,
@@ -643,6 +693,14 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         },
     )
 
+    final_return_mean = evaluate_policy(
+        agent,
+        env_name=cfg.env_name,
+        eval_episodes=cfg.eval_episodes_final,
+        seed=seed,
+        episode_max_steps=cfg.episode_max_steps,
+    )
+
     asymptotic = None
     if len(eval_returns) > 0:
         window = min(cfg.asymptotic_window_evals, len(eval_returns))
@@ -650,6 +708,16 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         if wandb and wandb.run is not None:
             wandb.summary["eval/asymptotic_return"] = asymptotic
             wandb.summary["eval/convergence_step"] = convergence_step
+            wandb.summary["eval/final_return_mean"] = float(final_return_mean)
+            wandb.summary["eval/convergence_step_stable_k"] = convergence_step_stable_k
+            wandb.log(
+                {
+                    "train/step": cfg.train_max_steps,
+                    "eval/final_return_mean": float(final_return_mean),
+                    "eval/convergence_step_stable_k": convergence_step_stable_k,
+                },
+                step=cfg.train_max_steps,
+            )
 
     return {
         "seed": seed,
@@ -657,6 +725,8 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "eval_returns": eval_returns,
         "asymptotic_return": asymptotic,
         "convergence_step": convergence_step,
+        "final_return_mean": float(final_return_mean),
+        "convergence_step_stable_k": convergence_step_stable_k,
     }
 
 
@@ -677,6 +747,8 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     eval_steps = []
     eval_returns = []
     convergence_step = None
+    convergence_step_stable_k = None
+    consecutive_above = 0
 
     state, _ = env.reset(seed=seed)
     ep_steps = 0
@@ -756,6 +828,17 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 ckpt_path = save_checkpoint(
                     ckpt_root, f"converged_{abs(int(cfg.convergence_threshold))}.pt", payload
                 )
+
+            # stable convergence: first step where we have K consecutive eval points above threshold
+            if eval_return > cfg.convergence_threshold:
+                consecutive_above += 1
+            else:
+                consecutive_above = 0
+            if (
+                convergence_step_stable_k is None
+                and consecutive_above >= int(cfg.convergence_stable_k)
+            ):
+                convergence_step_stable_k = step
                 log_checkpoint_artifact(
                     cfg,
                     ckpt_path,
@@ -815,6 +898,14 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         },
     )
 
+    final_return_mean = evaluate_policy(
+        agent,
+        env_name=cfg.env_name,
+        eval_episodes=cfg.eval_episodes_final,
+        seed=seed,
+        episode_max_steps=cfg.episode_max_steps,
+    )
+
     asymptotic = None
     if len(eval_returns) > 0:
         window = min(cfg.asymptotic_window_evals, len(eval_returns))
@@ -822,6 +913,16 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         if wandb and wandb.run is not None:
             wandb.summary["eval/asymptotic_return"] = asymptotic
             wandb.summary["eval/convergence_step"] = convergence_step
+            wandb.summary["eval/final_return_mean"] = float(final_return_mean)
+            wandb.summary["eval/convergence_step_stable_k"] = convergence_step_stable_k
+            wandb.log(
+                {
+                    "train/step": cfg.train_max_steps,
+                    "eval/final_return_mean": float(final_return_mean),
+                    "eval/convergence_step_stable_k": convergence_step_stable_k,
+                },
+                step=cfg.train_max_steps,
+            )
 
     return {
         "seed": seed,
@@ -829,6 +930,8 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "eval_returns": eval_returns,
         "asymptotic_return": asymptotic,
         "convergence_step": convergence_step,
+        "final_return_mean": float(final_return_mean),
+        "convergence_step_stable_k": convergence_step_stable_k,
     }
 
 
