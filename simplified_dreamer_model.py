@@ -98,12 +98,23 @@ class RSSM(nn.Module):
     - emb = encoder(obs[:, i]) ↔ e_t = f(o_t) (observation embedding)
     """
 
-    def __init__(self, action_dim: int, deter_dim: int, stoch_dim: int, hidden_dim: int = 256):
+    def __init__(
+        self,
+        action_dim: int,
+        deter_dim: int,
+        stoch_dim: int,
+        hidden_dim: int = 256,
+        *,
+        log_std_min: float = -20.0,
+        log_std_max: float = 2.0,
+    ):
 
         super().__init__()
         self.action_dim = action_dim
         self.deter_dim = deter_dim
         self.stoch_dim = stoch_dim
+        self.log_std_min = float(log_std_min)
+        self.log_std_max = float(log_std_max)
 
         # Recurrent update uses previous latent state and action.
         # concatenate (deter_{t-1}, stoch_{t-1}, action_{t-1}) as input.
@@ -140,7 +151,9 @@ class RSSM(nn.Module):
         # Prior for the new stochastic latent: p(stoch_t | deter_t)
         stats = self.prior(deter)
         mean, log_std = torch.chunk(stats, 2, dim=-1)
-        log_std = torch.clamp(log_std, -20, 2)
+        # Clamp log_std to a configured range for numerical stability.
+        # This is intentionally shared with other log_std clamps (actor / posterior / decoder) via DreamerConfig.
+        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
         eps = torch.randn_like(mean)
         stoch = mean + std * eps  # reparameterized sampling from the diagonal Gaussian prior
@@ -158,7 +171,14 @@ class WorldModel(nn.Module):
 
         # Encoder: e_t = f(o_t)
         self.encoder = mlp(obs_dim, cfg.latent_dim, hidden_dim=cfg.hidden_dim, depth=2)
-        self.rssm = RSSM(action_dim, cfg.deter_dim, cfg.latent_dim, hidden_dim=cfg.hidden_dim)
+        self.rssm = RSSM(
+            action_dim,
+            cfg.deter_dim,
+            cfg.latent_dim,
+            hidden_dim=cfg.hidden_dim,
+            log_std_min=float(cfg.log_std_min),
+            log_std_max=float(cfg.log_std_max),
+        )
 
         rssm_feat_dim = cfg.deter_dim + cfg.latent_dim
 
@@ -261,14 +281,18 @@ class WorldModel(nn.Module):
             # Prior for the current deter: p(stoch_t | deter_t)
             prior_stats = self.rssm.prior(deter)
             prior_mean, prior_log_std = torch.chunk(prior_stats, 2, dim=-1)
-            prior_log_std = torch.clamp(prior_log_std, -20, 2)
+            prior_log_std = torch.clamp(
+                prior_log_std, float(self.cfg.log_std_min), float(self.cfg.log_std_max)
+            )
             prior_std = torch.exp(prior_log_std)
 
             # Posterior correction (during training, use encoded observation to correct the latent stochastic state).
             # q(stoch_t | deter_t, emb_t)
             posterior_stats = self.rssm.posterior(torch.cat([deter, emb], dim=-1))
             posterior_mean, posterior_log_std = torch.chunk(posterior_stats, 2, dim=-1)
-            posterior_log_std = torch.clamp(posterior_log_std, -5, 2)
+            posterior_log_std = torch.clamp(
+                posterior_log_std, float(self.cfg.log_std_min), float(self.cfg.log_std_max)
+            )
             posterior_std = torch.exp(posterior_log_std)
 
             # KL balancing: distribute gradients between posterior and prior.
@@ -377,7 +401,9 @@ class WorldModel(nn.Module):
             deter, stoch = self.rssm.prior_step(deter, stoch, actions[:, i])
             posterior_stats = self.rssm.posterior(torch.cat([deter, emb], dim=-1))
             posterior_mean, posterior_log_std = torch.chunk(posterior_stats, 2, dim=-1)
-            posterior_log_std = torch.clamp(posterior_log_std, -5, 2)
+            posterior_log_std = torch.clamp(
+                posterior_log_std, float(self.cfg.log_std_min), float(self.cfg.log_std_max)
+            )
             posterior_std = torch.exp(posterior_log_std)
             stoch = posterior_mean + posterior_std * torch.randn_like(posterior_mean)
 

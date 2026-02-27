@@ -34,11 +34,22 @@ from simplified_dreamer_model import DreamerConfig, WorldModel
 
 
 class Actor(nn.Module):
-    def __init__(self, rssm_feat_dim: int, action_dim: int, hidden_dim: int = 256, action_scale: float = 2.0):
+    def __init__(
+        self,
+        rssm_feat_dim: int,
+        action_dim: int,
+        hidden_dim: int = 256,
+        action_scale: float = 2.0,
+        *,
+        log_std_min: float = -5.0,
+        log_std_max: float = 2.0,
+    ):
         super().__init__()
         self.net = mlp(rssm_feat_dim, 2 * action_dim, hidden_dim=hidden_dim, depth=2)
         self.action_dim = action_dim
         self.action_scale = action_scale
+        self.log_std_min = float(log_std_min)
+        self.log_std_max = float(log_std_max)
 
     def forward(self, feat: torch.Tensor, deterministic: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -51,7 +62,7 @@ class Actor(nn.Module):
         """
         stats = self.net(feat)
         mean, log_std = torch.chunk(stats, 2, dim=-1)
-        log_std = torch.clamp(log_std, -5, 2)
+        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
         if deterministic:
             action = torch.tanh(mean) * self.action_scale
@@ -91,7 +102,13 @@ class DreamerAgent:
 
         self.wm = WorldModel(obs_dim, action_dim, self.cfg).to(self.device)
         rssm_feat_dim = self.cfg.deter_dim + self.cfg.latent_dim
-        self.actor = Actor(rssm_feat_dim, action_dim, hidden_dim=self.cfg.hidden_dim).to(self.device)
+        self.actor = Actor(
+            rssm_feat_dim,
+            action_dim,
+            hidden_dim=self.cfg.hidden_dim,
+            log_std_min=float(getattr(self.cfg, "log_std_min", -5.0)),
+            log_std_max=float(getattr(self.cfg, "log_std_max", 2.0)),
+        ).to(self.device)
         self.critic = Critic(rssm_feat_dim, hidden_dim=self.cfg.hidden_dim).to(self.device)
         self.critic_target = Critic(rssm_feat_dim, hidden_dim=self.cfg.hidden_dim).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
@@ -148,7 +165,11 @@ class DreamerAgent:
             # 2) posterior correction using current observation embedding emb_t
             posterior_stats = self.wm.rssm.posterior(torch.cat([deter, emb], dim=-1))
             posterior_mean, posterior_log_std = torch.chunk(posterior_stats, 2, dim=-1)
-            posterior_log_std = torch.clamp(posterior_log_std, -5, 2)
+            posterior_log_std = torch.clamp(
+                posterior_log_std,
+                float(getattr(self.cfg, "log_std_min", -5.0)),
+                float(getattr(self.cfg, "log_std_max", 2.0)),
+            )
             posterior_std = torch.exp(posterior_log_std)
             stoch = posterior_mean + posterior_std * torch.randn_like(posterior_mean)
 
