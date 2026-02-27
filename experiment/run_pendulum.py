@@ -122,6 +122,9 @@ def evaluate_policy(
     avg_reward = 0.0
     for ep in range(eval_episodes):
         state, _ = env.reset(seed=seed + ep)
+        # Some agents (Dreamer-style) maintain recurrent state across steps and must be reset at episode boundaries.
+        if hasattr(agent, "reset_episode") and callable(getattr(agent, "reset_episode")):
+            agent.reset_episode()
         done = False
         ep_reward = 0.0
         steps = 0
