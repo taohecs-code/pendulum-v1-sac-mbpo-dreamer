@@ -3,9 +3,10 @@ Soft Actor-Critic (SAC) implementation for continuous control tasks.
 Reference: https://arxiv.org/pdf/1801.01290.pdf (and SAC-v2 refinements)
 
 Pendulum-v1 Environment Specifications:
-- State & Action Space: For Pendulum-v1, the Actor network's input state dimension 
-  must be 3 (comprising cos(theta), sin(theta), and theta_dot). The output action 
-  must be a 1D scalar, and the action range must be scaled/clipped to [-2.0, 2.0].
+- State & Action Space: For Pendulum-v1, the Actor network's input state dimension
+  must be 3 (comprising cos(theta), sin(theta), and theta_dot). The output action
+  is a 1D scalar. In general, actions must be scaled/clipped to the environment's
+  action bounds (read from `env.action_space`, not hardcoded).
 
 - Actor Network (Policy Improvement): 
   Must output a Gaussian policy and apply the reparameterization trick to enable 
