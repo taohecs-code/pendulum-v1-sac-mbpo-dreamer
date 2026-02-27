@@ -39,7 +39,7 @@ class Actor(nn.Module):
         rssm_feat_dim: int,
         action_dim: int,
         hidden_dim: int = 256,
-        action_scale: float = 2.0,
+        action_scale: float | torch.Tensor = 1.0,
         *,
         log_std_min: float = -5.0,
         log_std_max: float = 2.0,
@@ -47,7 +47,7 @@ class Actor(nn.Module):
         super().__init__()
         self.net = mlp(rssm_feat_dim, 2 * action_dim, hidden_dim=hidden_dim, depth=2)
         self.action_dim = action_dim
-        self.action_scale = action_scale
+        self.register_buffer("action_scale", torch.as_tensor(action_scale, dtype=torch.float32))
         self.log_std_min = float(log_std_min)
         self.log_std_max = float(log_std_max)
 
@@ -64,23 +64,23 @@ class Actor(nn.Module):
         mean, log_std = torch.chunk(stats, 2, dim=-1)
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
+        action_scale = self.action_scale.to(device=feat.device, dtype=feat.dtype)
         if deterministic:
-            action = torch.tanh(mean) * self.action_scale
+            action = torch.tanh(mean) * action_scale
             logp = torch.zeros((feat.shape[0], 1), device=feat.device)
             return action, logp
         eps = torch.randn_like(mean)
         u = mean + std * eps
         y = torch.tanh(u)
-        a = y * self.action_scale
+        a = y * action_scale
 
         # Exact log-prob for tanh-squashed Gaussian with additional action_scale:
         # log p(a) = log p(u) - sum log(action_scale * (1 - tanh(u)^2))
         logp_u = (-0.5 * (((u - mean) / (std + 1e-8)).pow(2) + 2.0 * log_std + torch.log(torch.tensor(2.0 * torch.pi, device=feat.device)))).sum(
             dim=-1, keepdim=True
         )
-        log_det = torch.log(torch.as_tensor(self.action_scale, device=feat.device)) * float(self.action_dim) + torch.log(
-            1.0 - y.pow(2) + 1e-6
-        ).sum(dim=-1, keepdim=True)
+        log_scale = torch.log(action_scale).sum() if action_scale.ndim > 0 else torch.log(action_scale) * float(self.action_dim)
+        log_det = log_scale + torch.log(1.0 - y.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         logp = logp_u - log_det
         return a, logp
 
@@ -96,7 +96,15 @@ class Critic(nn.Module):
 
 class DreamerAgent:
 
-    def __init__(self, obs_dim: int, action_dim: int, device: Optional[torch.device] = None, cfg: Optional[DreamerConfig] = None):
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        *,
+        action_scale: float | torch.Tensor = 1.0,
+        device: Optional[torch.device] = None,
+        cfg: Optional[DreamerConfig] = None,
+    ):
         self.cfg = cfg or DreamerConfig()
         self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
 
@@ -106,6 +114,7 @@ class DreamerAgent:
             rssm_feat_dim,
             action_dim,
             hidden_dim=self.cfg.hidden_dim,
+            action_scale=action_scale,
             log_std_min=float(getattr(self.cfg, "log_std_min", -5.0)),
             log_std_max=float(getattr(self.cfg, "log_std_max", 2.0)),
         ).to(self.device)

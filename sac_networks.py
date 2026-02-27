@@ -31,13 +31,6 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-# environment: Pendulum-v1
-ACTION_BOUNDS =2.0 # (-2.0, 2.0)
-ACTION_DIM = 1 # (torque)
-
-STATE_DIM = 3 # (theta, theta_dot, omega)
-HIDDEN_DIM = 256 # because the state dimension for the pendulum is 3, we need to use a higher dimension for hidden layers to capture the complexity of the state space
-
 
 class Actor(nn.Module):
     """
@@ -69,8 +62,12 @@ class Actor(nn.Module):
         Loss = E [ alpha * log_pi(a|s) - min(Q1(s, a), Q2(s, a)) ]
         """
 
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, hidden_dim: int = 256, action_scale: float | torch.Tensor = 1.0):
         super().__init__()
+
+        # action_scale rescales tanh-squashed actions from [-1, 1] to the environment action range.
+        # For most Gym continuous control tasks, action_space is symmetric, so action_scale ≈ action_space.high.
+        self.register_buffer("action_scale", torch.as_tensor(action_scale, dtype=torch.float32))
 
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -101,9 +98,11 @@ class Actor(nn.Module):
         log_std = torch.clamp(log_std, -20, 2) # for safety, usually the log_std is in the range of [-20, 2] for stability(avoid zero division and explosion)
         std = torch.exp(log_std)
 
+        action_scale = self.action_scale.to(device=state.device, dtype=state.dtype)
+
         # if deterministic, use the mean as the action
         if deterministic:
-            action = torch.tanh(mean) * ACTION_BOUNDS
+            action = torch.tanh(mean) * action_scale
             return action, None
         
         # if stochastic, sample the action from the distribution
@@ -111,14 +110,14 @@ class Actor(nn.Module):
         x_t = normal.rsample() # automatically applies the reparameterization trick
         
         y_t = torch.tanh(x_t) # bounded to [-1, 1]
-        action = y_t * ACTION_BOUNDS # bounded to [-ACTION_BOUNDS, ACTION_BOUNDS]
+        action = y_t * action_scale # bounded to env action range
 
         # calculate the log probability of the action
         log_prob = normal.log_prob(x_t)
         # Change of Variables Formula: log(pi(y)) = log(pi(x)) - log(|dy/dx|)
         # y is tanh(x), so dy/dx = 1 - y^2
         # 1e-6 is a small constant to avoid log(0)
-        log_prob -= torch.log(ACTION_BOUNDS * (1 - y_t.pow(2)) + 1e-6)
+        log_prob -= torch.log(action_scale * (1 - y_t.pow(2)) + 1e-6)
         # sum over the action dimension and keep the batch dimension
         log_prob = log_prob.sum(1, keepdim=True)
 

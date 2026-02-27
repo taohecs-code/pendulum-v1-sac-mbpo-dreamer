@@ -385,10 +385,12 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     env = gym.make(cfg.env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    action_scale = np.asarray(env.action_space.high, dtype=np.float32)
 
     agent = SACAgent(
         state_dim,
         action_dim,
+        action_scale=action_scale,
         device=device,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
@@ -590,11 +592,17 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     env = gym.make(cfg.env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    action_scale = np.asarray(env.action_space.high, dtype=np.float32)
 
     agent = MBPOAgent(
         state_dim,
         action_dim,
         device=device,
+        sac_kwargs={
+            "action_scale": action_scale,
+            "auto_alpha": cfg.sac_auto_alpha,
+            "target_entropy": cfg.sac_target_entropy,
+        },
         mbpo_cfg=MBPOConfig(
             horizon=cfg.horizon,
             model_ensemble_size=cfg.mbpo_ensemble_size,
@@ -813,10 +821,12 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     env = gym.make(cfg.env_name)
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    action_scale = np.asarray(env.action_space.high, dtype=np.float32)
 
     agent = DreamerAgent(
         obs_dim,
         action_dim,
+        action_scale=action_scale,
         device=device,
         cfg=DreamerConfig(
             horizon=cfg.horizon,
