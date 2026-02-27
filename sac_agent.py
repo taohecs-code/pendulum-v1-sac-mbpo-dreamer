@@ -23,6 +23,7 @@ class SACAgent:
         state_dim,
         action_dim,
         action_scale: float | torch.Tensor = 1.0,
+        action_bias: float | torch.Tensor = 0.0,
         device=None,
         lr=3e-4,
         gamma=0.99,
@@ -54,6 +55,7 @@ class SACAgent:
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.action_scale = action_scale
+        self.action_bias = action_bias
         self.lr = lr
         self.gamma = gamma
         self.tau = tau
@@ -63,7 +65,7 @@ class SACAgent:
         # Common default in SAC-v2: target_entropy = -|A|
         self.target_entropy = float(target_entropy) if target_entropy is not None else -float(action_dim)
 
-        self.actor = Actor(state_dim, action_dim, action_scale=action_scale).to(self.device)
+        self.actor = Actor(state_dim, action_dim, action_scale=action_scale, action_bias=action_bias).to(self.device)
         self.critic = Critic(state_dim, action_dim).to(self.device)
         self.critic_target = Critic(state_dim, action_dim).to(self.device)
 
@@ -199,6 +201,11 @@ class SACAgent:
                 if isinstance(self.action_scale, torch.Tensor)
                 else self.action_scale
             ),
+            "action_bias": (
+                self.action_bias.detach().cpu().tolist()
+                if isinstance(self.action_bias, torch.Tensor)
+                else self.action_bias
+            ),
             "lr": self.lr,
             "gamma": self.gamma,
             "tau": self.tau,
@@ -219,6 +226,7 @@ class SACAgent:
         self.state_dim = state["state_dim"]
         self.action_dim = state["action_dim"]
         self.action_scale = state.get("action_scale", 1.0)
+        self.action_bias = state.get("action_bias", 0.0)
         self.lr = state["lr"]
         self.gamma = state["gamma"]
         self.tau = state["tau"]

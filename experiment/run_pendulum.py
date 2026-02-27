@@ -385,12 +385,16 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     env = gym.make(cfg.env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    action_scale = np.asarray(env.action_space.high, dtype=np.float32)
+    action_high = np.asarray(env.action_space.high, dtype=np.float32)
+    action_low = np.asarray(env.action_space.low, dtype=np.float32)
+    action_scale = (action_high - action_low) / 2.0
+    action_bias = (action_high + action_low) / 2.0
 
     agent = SACAgent(
         state_dim,
         action_dim,
         action_scale=action_scale,
+        action_bias=action_bias,
         device=device,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
@@ -424,7 +428,7 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
 
-        replay_buffer.add(state, action, reward, next_state, done_for_learning)
+        replay_buffer.add(state, action, reward, next_state, done_for_learning, episode_end=float(episode_end))
 
         state = next_state
         ep_steps += 1
@@ -592,7 +596,10 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     env = gym.make(cfg.env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    action_scale = np.asarray(env.action_space.high, dtype=np.float32)
+    action_high = np.asarray(env.action_space.high, dtype=np.float32)
+    action_low = np.asarray(env.action_space.low, dtype=np.float32)
+    action_scale = (action_high - action_low) / 2.0
+    action_bias = (action_high + action_low) / 2.0
 
     agent = MBPOAgent(
         state_dim,
@@ -600,6 +607,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         device=device,
         sac_kwargs={
             "action_scale": action_scale,
+            "action_bias": action_bias,
             "auto_alpha": cfg.sac_auto_alpha,
             "target_entropy": cfg.sac_target_entropy,
         },
@@ -635,7 +643,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
 
-        replay_buffer.add(state, action, reward, next_state, done_for_learning)
+        replay_buffer.add(state, action, reward, next_state, done_for_learning, episode_end=float(episode_end))
         state = next_state
         ep_steps += 1
 
@@ -821,12 +829,16 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     env = gym.make(cfg.env_name)
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
-    action_scale = np.asarray(env.action_space.high, dtype=np.float32)
+    action_high = np.asarray(env.action_space.high, dtype=np.float32)
+    action_low = np.asarray(env.action_space.low, dtype=np.float32)
+    action_scale = (action_high - action_low) / 2.0
+    action_bias = (action_high + action_low) / 2.0
 
     agent = DreamerAgent(
         obs_dim,
         action_dim,
         action_scale=action_scale,
+        action_bias=action_bias,
         device=device,
         cfg=DreamerConfig(
             horizon=cfg.horizon,
@@ -868,19 +880,23 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         next_state, reward, terminated, truncated, _ = env.step(action)
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
-        replay_buffer.add(state, action, reward, next_state, done_for_learning)
+        replay_buffer.add(state, action, reward, next_state, done_for_learning, episode_end=float(episode_end))
         state = next_state
         ep_steps += 1
 
         loss_dict: Dict[str, float] = {}
         if step >= cfg.replay_prefill_steps and replay_buffer.size >= cfg.dreamer_seq_len + 1:
             # Train world model on sequences
-            obs_seq, act_seq, rew_seq, _, done_seq = replay_buffer.sample_sequences(cfg.batch_size, cfg.dreamer_seq_len)
+            obs_seq, act_seq, rew_seq, _, done_seq, episode_end_seq = replay_buffer.sample_sequences(
+                cfg.batch_size, cfg.dreamer_seq_len
+            )
             obs_seq = obs_seq.to(agent.device)
             act_seq = act_seq.to(agent.device)
             rew_seq = rew_seq.to(agent.device)
-            done_seq = done_seq.to(agent.device)
-            wm_losses = agent.train_world_model(obs_seq, act_seq, reward_seq=rew_seq, done_seq=done_seq)
+            episode_end_seq = episode_end_seq.to(agent.device)
+            wm_losses = agent.train_world_model(
+                obs_seq, act_seq, reward_seq=rew_seq, episode_end_seq=episode_end_seq
+            )
             loss_dict.update(wm_losses)
 
             ac_losses = agent.train_actor_critic(obs_seq, action_seq=act_seq)

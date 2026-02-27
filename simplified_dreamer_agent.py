@@ -40,6 +40,7 @@ class Actor(nn.Module):
         action_dim: int,
         hidden_dim: int = 256,
         action_scale: float | torch.Tensor = 1.0,
+        action_bias: float | torch.Tensor = 0.0,
         *,
         log_std_min: float = -5.0,
         log_std_max: float = 2.0,
@@ -48,6 +49,7 @@ class Actor(nn.Module):
         self.net = mlp(rssm_feat_dim, 2 * action_dim, hidden_dim=hidden_dim, depth=2)
         self.action_dim = action_dim
         self.register_buffer("action_scale", torch.as_tensor(action_scale, dtype=torch.float32))
+        self.register_buffer("action_bias", torch.as_tensor(action_bias, dtype=torch.float32))
         self.log_std_min = float(log_std_min)
         self.log_std_max = float(log_std_max)
 
@@ -65,14 +67,15 @@ class Actor(nn.Module):
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
         std = torch.exp(log_std)
         action_scale = self.action_scale.to(device=feat.device, dtype=feat.dtype)
+        action_bias = self.action_bias.to(device=feat.device, dtype=feat.dtype)
         if deterministic:
-            action = torch.tanh(mean) * action_scale
+            action = torch.tanh(mean) * action_scale + action_bias
             logp = torch.zeros((feat.shape[0], 1), device=feat.device)
             return action, logp
         eps = torch.randn_like(mean)
         u = mean + std * eps
         y = torch.tanh(u)
-        a = y * action_scale
+        a = y * action_scale + action_bias
 
         # Exact log-prob for tanh-squashed Gaussian with additional action_scale:
         # log p(a) = log p(u) - sum log(action_scale * (1 - tanh(u)^2))
@@ -102,6 +105,7 @@ class DreamerAgent:
         action_dim: int,
         *,
         action_scale: float | torch.Tensor = 1.0,
+        action_bias: float | torch.Tensor = 0.0,
         device: Optional[torch.device] = None,
         cfg: Optional[DreamerConfig] = None,
     ):
@@ -115,6 +119,7 @@ class DreamerAgent:
             action_dim,
             hidden_dim=self.cfg.hidden_dim,
             action_scale=action_scale,
+            action_bias=action_bias,
             log_std_min=float(getattr(self.cfg, "log_std_min", -5.0)),
             log_std_max=float(getattr(self.cfg, "log_std_max", 2.0)),
         ).to(self.device)
@@ -195,7 +200,7 @@ class DreamerAgent:
         obs_seq: torch.Tensor,
         act_seq: torch.Tensor,
         reward_seq: torch.Tensor,
-        done_seq: torch.Tensor,
+        episode_end_seq: torch.Tensor,
     ) -> Dict[str, float]:
         self.wm.train()
 
@@ -217,7 +222,7 @@ class DreamerAgent:
         reward_mse = reward_err.pow(2).mean()
 
         # Continuation loss: continuation_target = 1 for non-terminal, 0 for terminal.
-        continuation_target = (1.0 - done_seq).clamp(0.0, 1.0)
+        continuation_target = (1.0 - episode_end_seq).clamp(0.0, 1.0)
         continuation_loss = F.binary_cross_entropy_with_logits(pred_continuation_logit, continuation_target)
 
         kl_loss = out["kl_loss"]

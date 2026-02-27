@@ -63,12 +63,20 @@ class Actor(nn.Module):
         Loss = E [ alpha * log_pi(a|s) - min(Q1(s, a), Q2(s, a)) ]
         """
 
-    def __init__(self, state_dim, action_dim, hidden_dim: int = 256, action_scale: float | torch.Tensor = 1.0):
+    def __init__(
+        self,
+        state_dim,
+        action_dim,
+        hidden_dim: int = 256,
+        action_scale: float | torch.Tensor = 1.0,
+        action_bias: float | torch.Tensor = 0.0,
+    ):
         super().__init__()
 
         # action_scale rescales tanh-squashed actions from [-1, 1] to the environment action range.
         # For most Gym continuous control tasks, action_space is symmetric, so action_scale ≈ action_space.high.
         self.register_buffer("action_scale", torch.as_tensor(action_scale, dtype=torch.float32))
+        self.register_buffer("action_bias", torch.as_tensor(action_bias, dtype=torch.float32))
 
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
@@ -100,10 +108,11 @@ class Actor(nn.Module):
         std = torch.exp(log_std)
 
         action_scale = self.action_scale.to(device=state.device, dtype=state.dtype)
+        action_bias = self.action_bias.to(device=state.device, dtype=state.dtype)
 
         # if deterministic, use the mean as the action
         if deterministic:
-            action = torch.tanh(mean) * action_scale
+            action = torch.tanh(mean) * action_scale + action_bias
             return action, None
         
         # if stochastic, sample the action from the distribution
@@ -111,7 +120,7 @@ class Actor(nn.Module):
         x_t = normal.rsample() # automatically applies the reparameterization trick
         
         y_t = torch.tanh(x_t) # bounded to [-1, 1]
-        action = y_t * action_scale # bounded to env action range
+        action = y_t * action_scale + action_bias # bounded to env action range
 
         # calculate the log probability of the action
         log_prob = normal.log_prob(x_t)
