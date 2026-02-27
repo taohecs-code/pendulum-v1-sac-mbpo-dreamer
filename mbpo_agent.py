@@ -114,7 +114,7 @@ class MBPOAgent:
         s = start_states.to(device)
 
         # These 5 lists collect per-step rollout tuples (s, a, r, s', done).
-        # We append one step per loop iteration, then concatenate into a single large batch with
+        # append one step per loop iteration, then concatenate into a single large batch with
         # shapes roughly (batch_size * horizon, ...), which is fed into SACAgent.train_from_tensors(...)
         # for synthetic updates.
         batch_states = []

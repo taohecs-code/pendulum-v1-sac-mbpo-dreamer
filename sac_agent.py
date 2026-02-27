@@ -40,6 +40,7 @@ class SACAgent:
             tau (float): The soft update rate.
             alpha (float): The temperature parameter.
         """
+
         if device is None:
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -56,6 +57,7 @@ class SACAgent:
         self.tau = tau
         self.alpha = float(alpha)
         self.auto_alpha = bool(auto_alpha)
+
         # Common default in SAC-v2: target_entropy = -|A|
         self.target_entropy = float(target_entropy) if target_entropy is not None else -float(action_dim)
 
@@ -71,7 +73,7 @@ class SACAgent:
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
 
         # Optional: automatic entropy temperature tuning (SAC-v2)
-        # We optimize log_alpha to keep policy entropy close to target_entropy.
+        # optimize log_alpha to keep policy entropy close to target_entropy.
         if self.auto_alpha:
             self.log_alpha = torch.tensor(
                 float(torch.log(torch.tensor(self.alpha))),
@@ -94,7 +96,9 @@ class SACAgent:
         Returns:
             action (torch.Tensor): The action.
         """
+
         self.actor.eval()
+
         with torch.no_grad():
             # NumPy (1D) -> Tensor (1D) -> Tensor (2D, Batch=1) -> Device
             state = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -110,6 +114,7 @@ class SACAgent:
             replay_buffer (ReplayBuffer): The replay buffer.
             batch_size (int): The batch size.
         """
+        
         state, action, reward, next_state, done = replay_buffer.sample(batch_size)
         return self.train_from_tensors(state, action, reward, next_state, done)
 
@@ -163,7 +168,7 @@ class SACAgent:
 
         self.actor_optimizer.step()
 
-        # (optional) update alpha to match target entropy
+        # update alpha to match target entropy
         alpha_loss = None
         if self.auto_alpha and self.alpha_optimizer is not None and self.log_alpha is not None:
             # Use the current policy log_prob; detach so alpha update doesn't backprop into actor.

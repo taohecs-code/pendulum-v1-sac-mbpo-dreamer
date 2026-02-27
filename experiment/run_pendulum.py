@@ -39,7 +39,7 @@ except Exception:  # pragma: no cover
 from sac_agent import SACAgent
 from buffer import ReplayBuffer
 from mbpo_agent import MBPOAgent, MBPOConfig
-from dreamer_agent import DreamerAgent, DreamerConfig
+from simplified_dreamer_agent import DreamerAgent, DreamerConfig
 
 
 # =========================
@@ -210,6 +210,20 @@ class ExperimentConfig:
 
     dreamer_seq_len: int = DREAMER_SEQ_LEN_DEFAULT
 
+    # Dreamer extras (paper-shaped stabilizers / likelihoods)
+    dreamer_kl_beta: float = 1.0
+    dreamer_continuation_beta: float = 1.0
+    dreamer_free_nats: float = 3.0
+    dreamer_kl_balance: float = 0.8
+    dreamer_obs_std: float = 0.1
+    dreamer_reward_std: float = 1.0
+    dreamer_learn_std: bool = True
+    dreamer_log_std_min: float = -5.0
+    dreamer_log_std_max: float = 2.0
+    dreamer_target_tau: float = 0.01
+    dreamer_lambda: float = 0.95
+    dreamer_actor_entropy_coef: float = 0.0
+
     # SAC extras
     sac_auto_alpha: bool = False
     sac_target_entropy: Optional[float] = None
@@ -253,6 +267,35 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--mbpo-top-k", type=int, default=5)
     p.add_argument("--dreamer-seq-len", type=int, default=DREAMER_SEQ_LEN_DEFAULT)
 
+    # Dreamer extras (match DreamerConfig fields)
+    dreamer_defaults = DreamerConfig()
+    p.add_argument("--dreamer-kl-beta", type=float, default=float(dreamer_defaults.kl_beta))
+    p.add_argument(
+        "--dreamer-cont-beta",
+        "--dreamer-continuation-beta",
+        dest="dreamer_continuation_beta",
+        type=float,
+        default=float(getattr(dreamer_defaults, "continuation_beta", 1.0)),
+    )
+    p.add_argument("--dreamer-free-nats", type=float, default=float(dreamer_defaults.free_nats))
+    p.add_argument("--dreamer-kl-balance", type=float, default=float(dreamer_defaults.kl_balance))
+    p.add_argument("--dreamer-obs-std", type=float, default=float(dreamer_defaults.obs_std))
+    p.add_argument("--dreamer-reward-std", type=float, default=float(dreamer_defaults.reward_std))
+    p.add_argument(
+        "--dreamer-learn-std",
+        action=argparse.BooleanOptionalAction,
+        default=bool(getattr(dreamer_defaults, "learn_std", True)),
+    )
+    p.add_argument("--dreamer-log-std-min", type=float, default=float(getattr(dreamer_defaults, "log_std_min", -5.0)))
+    p.add_argument("--dreamer-log-std-max", type=float, default=float(getattr(dreamer_defaults, "log_std_max", 2.0)))
+    p.add_argument("--dreamer-target-tau", type=float, default=float(dreamer_defaults.target_tau))
+    p.add_argument("--dreamer-lambda", type=float, default=float(dreamer_defaults.lambda_))
+    p.add_argument(
+        "--dreamer-actor-entropy-coef",
+        type=float,
+        default=float(getattr(dreamer_defaults, "actor_entropy_coef", 0.0)),
+    )
+
     # SAC extras
     p.add_argument("--sac-auto-alpha", action="store_true")
     p.add_argument("--sac-target-entropy", type=float, default=None)
@@ -291,6 +334,18 @@ def parse_args() -> ExperimentConfig:
         mbpo_ensemble_size=args.mbpo_ensemble_size,
         mbpo_top_k=args.mbpo_top_k,
         dreamer_seq_len=args.dreamer_seq_len,
+        dreamer_kl_beta=float(args.dreamer_kl_beta),
+        dreamer_continuation_beta=float(args.dreamer_continuation_beta),
+        dreamer_free_nats=float(args.dreamer_free_nats),
+        dreamer_kl_balance=float(args.dreamer_kl_balance),
+        dreamer_obs_std=float(args.dreamer_obs_std),
+        dreamer_reward_std=float(args.dreamer_reward_std),
+        dreamer_learn_std=bool(args.dreamer_learn_std),
+        dreamer_log_std_min=float(args.dreamer_log_std_min),
+        dreamer_log_std_max=float(args.dreamer_log_std_max),
+        dreamer_target_tau=float(args.dreamer_target_tau),
+        dreamer_lambda=float(args.dreamer_lambda),
+        dreamer_actor_entropy_coef=float(args.dreamer_actor_entropy_coef),
         sac_auto_alpha=bool(args.sac_auto_alpha),
         sac_target_entropy=args.sac_target_entropy,
         use_wandb=not args.no_wandb,
@@ -760,7 +815,21 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         obs_dim,
         action_dim,
         device=device,
-        cfg=DreamerConfig(horizon=cfg.horizon),
+        cfg=DreamerConfig(
+            horizon=cfg.horizon,
+            kl_beta=cfg.dreamer_kl_beta,
+            continuation_beta=cfg.dreamer_continuation_beta,
+            free_nats=cfg.dreamer_free_nats,
+            kl_balance=cfg.dreamer_kl_balance,
+            obs_std=cfg.dreamer_obs_std,
+            reward_std=cfg.dreamer_reward_std,
+            learn_std=cfg.dreamer_learn_std,
+            log_std_min=cfg.dreamer_log_std_min,
+            log_std_max=cfg.dreamer_log_std_max,
+            target_tau=cfg.dreamer_target_tau,
+            lambda_=cfg.dreamer_lambda,
+            actor_entropy_coef=cfg.dreamer_actor_entropy_coef,
+        ),
     )
     replay_buffer = ReplayBuffer(obs_dim, action_dim)
 
@@ -771,6 +840,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     consecutive_above = 0
 
     state, _ = env.reset(seed=seed)
+    agent.reset_episode()
     ep_steps = 0
 
     t0 = time.time()
@@ -792,21 +862,20 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         loss_dict: Dict[str, float] = {}
         if step >= cfg.replay_prefill_steps and replay_buffer.size >= cfg.dreamer_seq_len + 1:
             # Train world model on sequences
-            obs_seq, act_seq, rew_seq, _, _ = replay_buffer.sample_sequences(cfg.batch_size, cfg.dreamer_seq_len)
+            obs_seq, act_seq, rew_seq, _, done_seq = replay_buffer.sample_sequences(cfg.batch_size, cfg.dreamer_seq_len)
             obs_seq = obs_seq.to(agent.device)
             act_seq = act_seq.to(agent.device)
             rew_seq = rew_seq.to(agent.device)
-            wm_losses = agent.train_world_model(obs_seq, act_seq, rew_seq)
+            done_seq = done_seq.to(agent.device)
+            wm_losses = agent.train_world_model(obs_seq, act_seq, reward_seq=rew_seq, done_seq=done_seq)
             loss_dict.update(wm_losses)
 
-            # Get features to train actor/critic (reuse wm forward pass)
-            with torch.no_grad():
-                feats = agent.wm.forward_reconstruction(obs_seq, act_seq)["features"]
-            ac_losses = agent.train_actor_critic(feats, rew_seq)
+            ac_losses = agent.train_actor_critic(obs_seq, action_seq=act_seq)
             loss_dict.update(ac_losses)
 
         if episode_end or ep_steps >= cfg.episode_max_steps:
             state, _ = env.reset()
+            agent.reset_episode()
             ep_steps = 0
 
         if step % cfg.eval_frequency_steps == 0 and step >= cfg.replay_prefill_steps:

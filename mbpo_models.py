@@ -1,4 +1,4 @@
-"""
+r"""
 MBPO dynamics model.
 
 1. Probabilistic dynamics ensemble: train an ensemble of models to predict environment dynamics.
@@ -76,7 +76,7 @@ class DynamicsModel(nn.Module):
         mu, _ = self.forward(state, action)
         delta_mu = mu[..., : self.state_dim]
         reward_mu = mu[..., self.state_dim :]
-        next_state_mu = state + delta_mu  # We model delta-state, so we add it to the current state to get next_state.
+        next_state_mu = state + delta_mu  # model delta-state, so we add it to the current state to get next_state.
         return next_state_mu, reward_mu
 
     @torch.no_grad()
@@ -238,7 +238,7 @@ def train_dynamics_ensemble(
         nll_sum = nll_sum + nll
 
         # metrics on full batch (use mean prediction)
-        # We compute MSE using the mean prediction mu (deterministic),
+        # compute MSE using the mean prediction mu (deterministic),
         # and compare against ground-truth next_state/reward stored in the replay buffer.
         mu_full, log_std_full = model(state, action)
         delta_mu = mu_full[..., : ensemble.state_dim]

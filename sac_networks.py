@@ -79,9 +79,9 @@ class Actor(nn.Module):
             nn.ReLU(),
         )
 
-        # we need mean, variance and log_pi of the action distribution
+        # need mean, variance and log_pi of the action distribution
         # but we can't directly output the variance(for relu will truncate the negative variance to zero), so we need to output the log_std and use exp to get the variance
-        # we calculate the log_pi later in the forward method(after sampling the action)
+        # calculate the log_pi later in the forward method(after sampling the action)
         self.mean_layer = nn.Linear(hidden_dim, action_dim)
         self.log_std_layer = nn.Linear(hidden_dim, action_dim)
 

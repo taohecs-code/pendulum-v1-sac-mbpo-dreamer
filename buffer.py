@@ -74,7 +74,7 @@ class ReplayBuffer:
             torch.FloatTensor(self.done[ind]).to(self.device)
         )
 
-    def sample_sequences(self, batch_size: int, seq_len: int):
+    def sample_sequences(self, batch_size: int, seq_len: int, *, avoid_episode_crossing: bool = True):
         """
         Sample contiguous sequences for sequence models (e.g., Dreamer world model).
 
@@ -88,8 +88,35 @@ class ReplayBuffer:
         if self.size < seq_len + 1:
             raise ValueError(f"Not enough data to sample sequences: size={self.size}, seq_len={seq_len}")
 
-        # Choose starting indices such that [start, start+seq_len) is valid.
-        starts = np.random.randint(0, self.size - seq_len, size=batch_size)
+        max_start = self.size - seq_len
+
+        if avoid_episode_crossing:
+            # We disallow sequences that cross an episode boundary.
+            #
+            # In this buffer `done[t]=1` indicates a true terminal transition at index t.
+            # Crossing the boundary would mix transitions from different episodes in a single sequence.
+            #
+            # Condition: for a start index s, require dones[s : s+seq_len-1] are all zeros.
+            # (The last element can be terminal; it only affects the next step outside the sampled window.)
+            done_flat = self.done[: self.size, 0].astype(np.int32)  # (size,)
+            window = seq_len - 1
+            if window <= 0:
+                valid_starts = np.arange(max_start, dtype=np.int64)
+            else:
+                csum = np.concatenate([[0], np.cumsum(done_flat, dtype=np.int64)])
+                # terminal_count[s] = sum(done_flat[s : s+window])
+                terminal_count = csum[window:] - csum[:-window]  # (size-window+1,)
+                valid_starts = np.where(terminal_count[:max_start] == 0)[0]
+
+            if valid_starts.size == 0:
+                raise ValueError(
+                    "No valid episode-contained sequences found. "
+                    "Try decreasing seq_len, increasing replay_prefill_steps, or collecting longer episodes."
+                )
+            starts = np.random.choice(valid_starts, size=batch_size, replace=valid_starts.size < batch_size)
+        else:
+            starts = np.random.randint(0, max_start, size=batch_size)
+
         idx = starts[:, None] + np.arange(seq_len)[None, :]
 
         return (
