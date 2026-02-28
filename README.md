@@ -116,3 +116,11 @@ python experiment/run_pendulum.py --algo dreamer --seeds 1 --train-steps 5000 --
 - This code prioritizes a **unified experiment harness** and **consistent evaluation** over perfectly matching every detail of canonical MBPO/Dreamer papers.
 - The Dreamer implementation is a **simplified MLP-only** variant tailored to low-dimensional `Pendulum-v1`.
 
+### ReplayBuffer conventions (important for reproducibility)
+
+The shared `ReplayBuffer` stores two termination signals:
+- **done_for_learning** (`done`): `1` if **terminated** (used for bootstrapping targets; time-limit truncation does not cut off TD targets)
+- **episode_end**: `1` if **terminated OR truncated** (used to prevent sequence sampling from crossing episode boundaries; used by Dreamer continuation training depending on `--dreamer-cont-target`)
+
+Dreamer uses `ReplayBuffer.sample_sequences(...)` which enforces **no episode crossing** using `episode_end`.
+

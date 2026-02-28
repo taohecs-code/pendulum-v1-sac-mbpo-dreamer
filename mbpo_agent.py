@@ -193,8 +193,14 @@ class MBPOAgent:
 
     def train_policy_on_synthetic(self, replay_buffer, batch_size: int) -> Dict[str, float]:
         """
-        Sample start states from the real buffer, roll out with the model for H steps,
+        Sample start states from the real replay buffer, roll out with the learned model for H steps,
         then train SAC on the generated synthetic batch.
+
+        Notes:
+        - If synthetic_updates_per_env_step > 1, we re-sample fresh start states for each synthetic update to improve
+          diversity (rather than reusing a single s0 batch).
+        - Synthetic `done` is produced by the dynamics ensemble's terminal head (trained on replay done_for_learning),
+          and an absorbing-state mask is applied after termination.
         """
         n_updates = max(1, int(self.cfg.synthetic_updates_per_env_step))
         acc: Dict[str, float] = {}
