@@ -393,7 +393,12 @@ def init_wandb(cfg: ExperimentConfig, seed: int) -> Any:
     if not cfg.use_wandb:
         return None
     if wandb is None:
-        raise RuntimeError("wandb is not installed but use_wandb=True. Install wandb or pass --no-wandb.")
+        raise RuntimeError(
+            "W&B logging is enabled but `wandb` is not installed.\n"
+            "- Install: `pip install wandb`\n"
+            "- Or disable logging: pass `--no-wandb`\n"
+            "- In Colab: run `wandb login` once (or set `WANDB_API_KEY`)."
+        )
 
     run_name = make_run_name(cfg.algo, seed, horizon=cfg.horizon, arch=cfg.dreamer_arch)
     config_dict = dataclasses.asdict(cfg)
@@ -426,7 +431,7 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         target_entropy=cfg.sac_target_entropy,
     )
     agent = SACAgent(state_dim, action_dim, device=device, cfg=sac_cfg)
-    replay_buffer = ReplayBuffer(state_dim, action_dim)
+    replay_buffer = ReplayBuffer(state_dim, action_dim, device=device)
 
     # Trackers
     eval_steps = []
@@ -647,7 +652,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             synthetic_updates_per_env_step=cfg.mbpo_synthetic_updates_per_env_step,
         ),
     )
-    replay_buffer = ReplayBuffer(state_dim, action_dim)
+    replay_buffer = ReplayBuffer(state_dim, action_dim, device=device)
 
     eval_steps = []
     eval_returns = []
@@ -893,7 +898,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             actor_entropy_coef=cfg.dreamer_actor_entropy_coef,
         ),
     )
-    replay_buffer = ReplayBuffer(obs_dim, action_dim)
+    replay_buffer = ReplayBuffer(obs_dim, action_dim, device=device)
 
     eval_steps = []
     eval_returns = []

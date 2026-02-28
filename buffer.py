@@ -19,13 +19,24 @@ Update:
 add sample_sequences method to sample contiguous sequences for sequence models (e.g., Dreamer world model).
 """
 
+from __future__ import annotations
+
+from typing import Optional, Union
+
 import numpy as np
 import torch
 
 
 class ReplayBuffer:
 
-    def __init__(self, state_dim, action_dim, max_size=int(1e6)):
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        max_size: int = int(1e6),
+        *,
+        device: Optional[Union[str, torch.device]] = None,
+    ):
         self.max_size = max_size
         self.ptr = 0  # Pointer to the current empty spot
         self.size = 0 # Current number of elements in the buffer
@@ -40,13 +51,17 @@ class ReplayBuffer:
         # episode_end: true episode boundary for sequence models / RNNs (terminated OR truncated)
         self.episode_end = np.zeros((max_size, 1), dtype=np.float32)
         
-        # Determine device so the buffer can automatically push batches to GPU/MPS
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        elif torch.backends.mps.is_available():
-            self.device = torch.device("mps")
+        # Determine device so the buffer can automatically push batches to the desired device.
+        # If `device` is explicitly provided, respect it (important for reproducibility and avoiding extra copies).
+        if device is not None:
+            self.device = torch.device(device)
         else:
-            self.device = torch.device("cpu")
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            else:
+                self.device = torch.device("cpu")
 
     def add(self, state, action, reward, next_state, done, episode_end=None):
         """
