@@ -46,6 +46,11 @@ class DreamerConfig:
     kl_beta: float = 1.0
     continuation_beta: float = 1.0
 
+    # Which signal defines "episode ended" for continuation training.
+    # - "episode_end": treat terminated OR truncated as end (finite-horizon / time-limit is a true end)
+    # - "terminated": treat only environment termination as end (time-limit is not an environment property)
+    continuation_target: str = "episode_end"
+
     # KL stabilization tricks commonly used in Dreamer implementations.
     free_nats: float = 3.0
     kl_balance: float = 0.8  # 1.0 => posterior-only grads, 0.0 => prior-only grads

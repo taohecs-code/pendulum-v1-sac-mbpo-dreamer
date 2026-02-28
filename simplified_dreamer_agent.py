@@ -207,6 +207,7 @@ class DreamerAgent:
         obs_seq: torch.Tensor,
         act_seq: torch.Tensor,
         reward_seq: torch.Tensor,
+        terminated_seq: torch.Tensor,
         episode_end_seq: torch.Tensor,
     ) -> Dict[str, float]:
         self.wm.train()
@@ -229,7 +230,13 @@ class DreamerAgent:
         reward_mse = reward_err.pow(2).mean()
 
         # Continuation loss: continuation_target = 1 for non-terminal, 0 for terminal.
-        continuation_target = (1.0 - episode_end_seq).clamp(0.0, 1.0)
+        #
+        # Different environments/tasks treat time-limit truncation differently:
+        # - continuation_target="episode_end": end = terminated OR truncated (finite-horizon / time-limit is a true end)
+        # - continuation_target="terminated": end = terminated only (time-limit is not a physics/environment property)
+        cont_mode = str(getattr(self.cfg, "continuation_target", "episode_end"))
+        end_seq = episode_end_seq if cont_mode == "episode_end" else terminated_seq
+        continuation_target = (1.0 - end_seq).clamp(0.0, 1.0)
         continuation_loss = F.binary_cross_entropy_with_logits(pred_continuation_logit, continuation_target)
 
         kl_loss = out["kl_loss"]

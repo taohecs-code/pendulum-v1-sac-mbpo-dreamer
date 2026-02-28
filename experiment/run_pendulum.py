@@ -221,6 +221,7 @@ class ExperimentConfig:
     dreamer_kl_beta_min: float = 0.0
     dreamer_kl_beta_max: float = 10.0
     dreamer_continuation_beta: float = 1.0
+    dreamer_continuation_target: str = "episode_end"
     dreamer_free_nats: float = 3.0
     dreamer_kl_balance: float = 0.8
     dreamer_obs_std: float = 0.1
@@ -294,6 +295,14 @@ def parse_args() -> ExperimentConfig:
         type=float,
         default=float(getattr(dreamer_defaults, "continuation_beta", 1.0)),
     )
+    p.add_argument(
+        "--dreamer-cont-target",
+        dest="dreamer_continuation_target",
+        type=str,
+        choices=("episode_end", "terminated"),
+        default=str(getattr(dreamer_defaults, "continuation_target", "episode_end")),
+        help="Which end signal trains continuation head: 'episode_end' (terminated|truncated) or 'terminated' only.",
+    )
     p.add_argument("--dreamer-free-nats", type=float, default=float(dreamer_defaults.free_nats))
     p.add_argument("--dreamer-kl-balance", type=float, default=float(dreamer_defaults.kl_balance))
     p.add_argument("--dreamer-obs-std", type=float, default=float(dreamer_defaults.obs_std))
@@ -358,6 +367,7 @@ def parse_args() -> ExperimentConfig:
         dreamer_kl_beta_min=float(args.dreamer_kl_beta_min),
         dreamer_kl_beta_max=float(args.dreamer_kl_beta_max),
         dreamer_continuation_beta=float(args.dreamer_continuation_beta),
+        dreamer_continuation_target=str(args.dreamer_continuation_target),
         dreamer_free_nats=float(args.dreamer_free_nats),
         dreamer_kl_balance=float(args.dreamer_kl_balance),
         dreamer_obs_std=float(args.dreamer_obs_std),
@@ -867,6 +877,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             kl_beta_min=cfg.dreamer_kl_beta_min,
             kl_beta_max=cfg.dreamer_kl_beta_max,
             continuation_beta=cfg.dreamer_continuation_beta,
+            continuation_target=cfg.dreamer_continuation_target,
             free_nats=cfg.dreamer_free_nats,
             kl_balance=cfg.dreamer_kl_balance,
             obs_std=cfg.dreamer_obs_std,
@@ -918,7 +929,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             rew_seq = rew_seq.to(agent.device)
             episode_end_seq = episode_end_seq.to(agent.device)
             wm_losses = agent.train_world_model(
-                obs_seq, act_seq, reward_seq=rew_seq, episode_end_seq=episode_end_seq
+                obs_seq, act_seq, reward_seq=rew_seq, terminated_seq=done_seq, episode_end_seq=episode_end_seq
             )
             loss_dict.update(wm_losses)
 
