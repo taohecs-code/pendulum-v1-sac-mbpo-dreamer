@@ -85,13 +85,13 @@ class MBPOAgent:
         return self.policy.train(replay_buffer, batch_size=batch_size)
 
     def train_model(self, replay_buffer, batch_size: int) -> ModelTrainStats:
-        batch = replay_buffer.sample(batch_size)
-        batch = tuple(t.to(self.policy.device) for t in batch)  # type: ignore[assignment]
         stats = None
         for _ in range(max(1, int(self.cfg.model_train_steps_per_env_step))):
             # Key knob: how many gradient steps to train the world model per real env step.
             # Example: model_train_steps_per_env_step=5 means we train the model 5 times per env step
-            # (in this minimal implementation, on the same sampled batch).
+            # (each step re-samples a fresh replay batch for stability).
+            batch = replay_buffer.sample(batch_size)
+            batch = tuple(t.to(self.policy.device) for t in batch)  # type: ignore[assignment]
             stats = train_dynamics_ensemble(self.model, batch, self.model_optimizer)
         # The loop runs at least once due to max(1, ...); stats should never be None here.
         assert stats is not None
@@ -150,11 +150,10 @@ class MBPOAgent:
         Sample start states from the real buffer, roll out with the model for H steps,
         then train SAC on the generated synthetic batch.
         """
-        state, _, _, _, _ = replay_buffer.sample(batch_size)
-        s0 = state.to(self.policy.device)
-
         losses: Dict[str, float] = {}
         for _ in range(max(1, int(self.cfg.synthetic_updates_per_env_step))):
+            state, _, _, _, _ = replay_buffer.sample(batch_size)
+            s0 = state.to(self.policy.device)
             syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)
             last = self.policy.train_from_tensors(*syn_batch)
             losses = last

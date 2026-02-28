@@ -201,14 +201,20 @@ def train_dynamics_ensemble(
     # - train split: optimize NLL
     # - val split: choose top-k models by lowest MSE
     b = state.shape[0]
-    # Validation set size = 1/5 of batch (at least 1).
-    val_b = max(1, b // 5)
-    train_b = b - val_b
     # Random permutation of indices 0..b-1.
     perm = torch.randperm(b, device=state.device)
-    # First part -> train, second part -> val.
-    train_idx = perm[:train_b]
-    val_idx = perm[train_b:]
+    if b < 2:
+        # Robustness: extremely small batches (e.g., b=1) would create an empty train or val split.
+        # In that case, just use the same tiny set for both train and selection metrics.
+        train_idx = perm
+        val_idx = perm
+    else:
+        # Validation set size = 1/5 of batch (at least 1).
+        val_b = max(1, b // 5)
+        train_b = b - val_b
+        # First part -> train, second part -> val.
+        train_idx = perm[:train_b]
+        val_idx = perm[train_b:]
 
     s_tr, a_tr, y_tr = state[train_idx], action[train_idx], y[train_idx]
     s_val, a_val = state[val_idx], action[val_idx]
@@ -258,6 +264,9 @@ def train_dynamics_ensemble(
 
     mse_s_avg = mse_s_sum / len(ensemble.models)
     mse_r_avg = mse_r_sum / len(ensemble.models)
+    # Global diagnostic: average predicted log_std over models and batch.
+    # This is a coarse summary (it can hide per-model differences), but is useful for spotting
+    # pathological uncertainty inflation/deflation.
     avg_log_std = log_std_sum / len(ensemble.models)
 
     # model selection by validation MSE (next_state + reward)
