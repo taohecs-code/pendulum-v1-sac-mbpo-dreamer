@@ -210,6 +210,7 @@ class ExperimentConfig:
     mbpo_synthetic_updates_per_env_step: int = 1
     mbpo_ensemble_size: int = 7
     mbpo_top_k: int = 5
+    mbpo_terminal_target: str = "terminated"
 
     dreamer_seq_len: int = DREAMER_SEQ_LEN_DEFAULT
 
@@ -274,6 +275,13 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--mbpo-synth-updates", type=int, default=1)
     p.add_argument("--mbpo-ensemble-size", type=int, default=7)
     p.add_argument("--mbpo-top-k", type=int, default=5)
+    p.add_argument(
+        "--mbpo-terminal-target",
+        type=str,
+        choices=("terminated", "episode_end"),
+        default="terminated",
+        help="Which replay signal trains MBPO terminal head and synthetic done: terminated only or episode_end (terminated|truncated).",
+    )
     p.add_argument("--dreamer-seq-len", type=int, default=DREAMER_SEQ_LEN_DEFAULT)
 
     # Dreamer extras (match DreamerConfig fields)
@@ -359,6 +367,7 @@ def parse_args() -> ExperimentConfig:
         mbpo_synthetic_updates_per_env_step=args.mbpo_synth_updates,
         mbpo_ensemble_size=args.mbpo_ensemble_size,
         mbpo_top_k=args.mbpo_top_k,
+        mbpo_terminal_target=str(args.mbpo_terminal_target),
         dreamer_seq_len=args.dreamer_seq_len,
         dreamer_kl_beta=float(args.dreamer_kl_beta),
         dreamer_auto_kl_beta=bool(args.dreamer_auto_kl_beta),
@@ -650,6 +659,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             model_top_k=cfg.mbpo_top_k,
             model_train_steps_per_env_step=cfg.mbpo_model_train_steps_per_env_step,
             synthetic_updates_per_env_step=cfg.mbpo_synthetic_updates_per_env_step,
+            terminal_target=cfg.mbpo_terminal_target,
         ),
     )
     replay_buffer = ReplayBuffer(state_dim, action_dim, device=device)
@@ -692,6 +702,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 {
                     "model/loss": model_stats.loss,
                     "model/nll": model_stats.nll,
+                    "model/terminal_target": str(cfg.mbpo_terminal_target),
                     "model/terminated_bce": getattr(model_stats, "terminated_bce", 0.0),
                     "model/terminated_acc": getattr(model_stats, "terminated_acc", 0.0),
                     "model/terminated_rate": getattr(model_stats, "terminated_rate", 0.0),

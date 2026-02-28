@@ -37,6 +37,10 @@ class MBPOConfig:
     model_lr: float = 1e-3
     model_train_steps_per_env_step: int = 1
     synthetic_updates_per_env_step: int = 1
+    # Which replay signal trains the terminal head / synthetic done:
+    # - "terminated": done_for_learning (physics terminal only)
+    # - "episode_end": terminated OR truncated (finite-horizon / time-limit as terminal)
+    terminal_target: str = "terminated"
 
 
 class MBPOAgent:
@@ -103,9 +107,13 @@ class MBPOAgent:
             # Key knob: how many gradient steps to train the world model per real env step.
             # Example: model_train_steps_per_env_step=5 means we train the model 5 times per env step
             # (each step re-samples a fresh replay batch for stability).
-            batch = replay_buffer.sample(batch_size)
-            batch = tuple(t.to(self.policy.device) for t in batch)  # type: ignore[assignment]
-            stats_last = train_dynamics_ensemble(self.model, batch, self.model_optimizer)
+            batch6 = replay_buffer.sample_with_episode_end(batch_size)
+            batch6 = tuple(t.to(self.policy.device) for t in batch6)  # type: ignore[assignment]
+            state, action, reward, next_state, done_for_learning, episode_end = batch6
+            term_mode = str(getattr(self.cfg, "terminal_target", "terminated"))
+            done_target = episode_end if term_mode == "episode_end" else done_for_learning
+            batch5 = (state, action, reward, next_state, done_target)
+            stats_last = train_dynamics_ensemble(self.model, batch5, self.model_optimizer)
             acc["loss"] += float(stats_last.loss)
             acc["nll"] += float(stats_last.nll)
             acc["mse_next_state"] += float(stats_last.mse_next_state)
@@ -222,6 +230,7 @@ class MBPOAgent:
                 "model_lr": self.cfg.model_lr,
                 "model_train_steps_per_env_step": self.cfg.model_train_steps_per_env_step,
                 "synthetic_updates_per_env_step": self.cfg.synthetic_updates_per_env_step,
+                "terminal_target": str(getattr(self.cfg, "terminal_target", "terminated")),
             },
             "policy": self.policy.get_state(),
             "model": self.model.state_dict(),

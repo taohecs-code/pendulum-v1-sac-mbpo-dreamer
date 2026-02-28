@@ -93,6 +93,28 @@ class ReplayBuffer:
             torch.FloatTensor(self.done[ind]).to(self.device)
         )
 
+    def sample_with_episode_end(self, batch_size: int):
+        """
+        Sample a random batch and also return `episode_end` (terminated OR truncated).
+
+        Returns tensors:
+          states:       (B, state_dim)
+          actions:      (B, action_dim)
+          rewards:      (B, 1)
+          next_states:  (B, state_dim)
+          dones:        (B, 1)  # done_for_learning (typically terminated)
+          episode_ends: (B, 1)  # true episode boundary (terminated OR truncated)
+        """
+        ind = np.random.randint(0, self.size, size=batch_size)
+        return (
+            torch.FloatTensor(self.state[ind]).to(self.device),
+            torch.FloatTensor(self.action[ind]).to(self.device),
+            torch.FloatTensor(self.reward[ind]).to(self.device),
+            torch.FloatTensor(self.next_state[ind]).to(self.device),
+            torch.FloatTensor(self.done[ind]).to(self.device),
+            torch.FloatTensor(self.episode_end[ind]).to(self.device),
+        )
+
     def sample_sequences(self, batch_size: int, seq_len: int, *, avoid_episode_crossing: bool = True):
         """
         Sample contiguous sequences for sequence models (e.g., Dreamer world model).
