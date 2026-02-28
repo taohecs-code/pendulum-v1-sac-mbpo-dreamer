@@ -85,17 +85,53 @@ class MBPOAgent:
         return self.policy.train(replay_buffer, batch_size=batch_size)
 
     def train_model(self, replay_buffer, batch_size: int) -> ModelTrainStats:
-        stats = None
-        for _ in range(max(1, int(self.cfg.model_train_steps_per_env_step))):
+        n_steps = max(1, int(self.cfg.model_train_steps_per_env_step))
+        stats_last = None
+        acc = {
+            "loss": 0.0,
+            "nll": 0.0,
+            "mse_next_state": 0.0,
+            "mse_reward": 0.0,
+            "avg_log_std": 0.0,
+            "epistemic_var_next_state": 0.0,
+            "epistemic_var_reward": 0.0,
+            "terminated_bce": 0.0,
+            "terminated_acc": 0.0,
+            "terminated_rate": 0.0,
+        }
+        for _ in range(n_steps):
             # Key knob: how many gradient steps to train the world model per real env step.
             # Example: model_train_steps_per_env_step=5 means we train the model 5 times per env step
             # (each step re-samples a fresh replay batch for stability).
             batch = replay_buffer.sample(batch_size)
             batch = tuple(t.to(self.policy.device) for t in batch)  # type: ignore[assignment]
-            stats = train_dynamics_ensemble(self.model, batch, self.model_optimizer)
-        # The loop runs at least once due to max(1, ...); stats should never be None here.
-        assert stats is not None
-        return stats
+            stats_last = train_dynamics_ensemble(self.model, batch, self.model_optimizer)
+            acc["loss"] += float(stats_last.loss)
+            acc["nll"] += float(stats_last.nll)
+            acc["mse_next_state"] += float(stats_last.mse_next_state)
+            acc["mse_reward"] += float(stats_last.mse_reward)
+            acc["avg_log_std"] += float(stats_last.avg_log_std)
+            acc["epistemic_var_next_state"] += float(stats_last.epistemic_var_next_state)
+            acc["epistemic_var_reward"] += float(stats_last.epistemic_var_reward)
+            acc["terminated_bce"] += float(getattr(stats_last, "terminated_bce", 0.0))
+            acc["terminated_acc"] += float(getattr(stats_last, "terminated_acc", 0.0))
+            acc["terminated_rate"] += float(getattr(stats_last, "terminated_rate", 0.0))
+
+        assert stats_last is not None
+        inv = 1.0 / float(n_steps)
+        return ModelTrainStats(
+            nll=acc["nll"] * inv,
+            loss=acc["loss"] * inv,
+            mse_next_state=acc["mse_next_state"] * inv,
+            mse_reward=acc["mse_reward"] * inv,
+            avg_log_std=acc["avg_log_std"] * inv,
+            epistemic_var_next_state=acc["epistemic_var_next_state"] * inv,
+            epistemic_var_reward=acc["epistemic_var_reward"] * inv,
+            selected_model_indices=list(stats_last.selected_model_indices),
+            terminated_bce=acc["terminated_bce"] * inv,
+            terminated_acc=acc["terminated_acc"] * inv,
+            terminated_rate=acc["terminated_rate"] * inv,
+        )
 
     @torch.no_grad()
     def rollout_model(
@@ -160,14 +196,16 @@ class MBPOAgent:
         Sample start states from the real buffer, roll out with the model for H steps,
         then train SAC on the generated synthetic batch.
         """
-        losses: Dict[str, float] = {}
-        for _ in range(max(1, int(self.cfg.synthetic_updates_per_env_step))):
+        n_updates = max(1, int(self.cfg.synthetic_updates_per_env_step))
+        acc: Dict[str, float] = {}
+        for _ in range(n_updates):
             state, _, _, _, _ = replay_buffer.sample(batch_size)
             s0 = state.to(self.policy.device)
             syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)
             last = self.policy.train_from_tensors(*syn_batch)
-            losses = last
-        return losses
+            for k, v in last.items():
+                acc[k] = float(acc.get(k, 0.0) + float(v))
+        return {k: v / float(n_updates) for k, v in acc.items()}
 
     def get_state(self) -> Dict[str, Any]:
         return {
