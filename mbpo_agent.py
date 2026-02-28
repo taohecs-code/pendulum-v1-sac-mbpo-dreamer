@@ -15,17 +15,6 @@ Overall order (per env step) in the runner:
   - next_state, reward = env.step(action)
   - replay_buffer.add(state, action, reward, next_state, done)  # real data goes into the real buffer
 - If step >= replay_prefill_steps, perform updates:
-  2.1 Real SAC update (from the real replay buffer)
-      - agent.train_policy_on_real(replay_buffer)
-  2.2 Model update (train dynamics ensemble from the real replay buffer)
-      - agent.train_model(replay_buffer)
-      - this updates ensemble.selected_model_indices (top-k selection)
-  2.3 Synthetic SAC updates (rollout happens here)
-      - agent.train_policy_on_synthetic(replay_buffer)
-      - sample start states from the real buffer: s0 = state_batch
-      - rollout_model(s0, horizon=H) generates synthetic (s, a, r, s', done)
-      - immediately run SAC updates on the synthetic batch via train_from_tensors(...)
-      - note: synthetic transitions are NOT written back to replay_buffer in this minimal implementation
 """
 
 from __future__ import annotations
@@ -35,7 +24,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
-from sac_agent import SACAgent
+from sac_agent import SACAgent, SACConfig
 from mbpo_models import DynamicsEnsemble, ModelTrainStats, train_dynamics_ensemble
 
 
@@ -56,12 +45,20 @@ class MBPOAgent:
         state_dim: int,
         action_dim: int,
         device: Optional[torch.device] = None,
+        sac_cfg: Optional[SACConfig] = None,
         sac_kwargs: Optional[Dict[str, Any]] = None,
         mbpo_cfg: Optional[MBPOConfig] = None,
     ):
-        sac_kwargs = sac_kwargs or {}
         self.device = device
-        self.policy = SACAgent(state_dim, action_dim, device=device, **sac_kwargs)
+        # MBPO uses SAC as the policy learner.
+        #
+        # Preferred: pass `sac_cfg=SACConfig(...)` (unified config style).
+        # Backward-compatible: accept sac_kwargs and convert to SACConfig.
+        if sac_cfg is None:
+            sac_kwargs = sac_kwargs or {}
+            sac_cfg_kwargs = {k: v for k, v in sac_kwargs.items() if k in SACConfig.__dataclass_fields__}
+            sac_cfg = SACConfig(**sac_cfg_kwargs)
+        self.policy = SACAgent(state_dim, action_dim, device=device, cfg=sac_cfg)
 
         self.cfg = mbpo_cfg or MBPOConfig()
         self.model = DynamicsEnsemble(

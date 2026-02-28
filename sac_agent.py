@@ -1,17 +1,38 @@
 """
 Soft Actor-Critic (SAC) Agent.
 
-This class combines the Actor and Critic networks defined in `sac_networks`. 
+This class combines the Actor and Critic networks defined in `sac_networks`.
 It strictly implements the core mechanisms required by the SAC algorithm, including:
 - Twin-Q target computation to mitigate overestimation bias.
 - Exponential Moving Average (EMA) for soft updates of the target critic network.
 """
+
+from __future__ import annotations
+
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from sac_networks import Actor, Critic
+
+
+@dataclass
+class SACConfig:
+    # RL hyperparameters
+    lr: float = 3e-4
+    gamma: float = 0.99
+    tau: float = 0.005
+
+    # Entropy temperature (alpha)
+    alpha: float = 0.2
+    auto_alpha: bool = False
+    target_entropy: float | None = None  # if None, default to -|A|
+
+    # Action mapping: a = tanh(u) * scale + bias
+    action_scale: float | torch.Tensor = 1.0
+    action_bias: float | torch.Tensor = 0.0
 
 
 
@@ -31,6 +52,7 @@ class SACAgent:
         alpha=0.2,
         auto_alpha: bool = False,
         target_entropy: float | None = None,
+        cfg: SACConfig | None = None,
     ):
         """
         Initialize the SAC agent.
@@ -43,6 +65,20 @@ class SACAgent:
             alpha (float): The temperature parameter.
         """
 
+        # Preferred: pass `cfg=SACConfig(...)`. Backward-compatible: construct config from legacy kwargs.
+        if cfg is None:
+            cfg = SACConfig(
+                lr=float(lr),
+                gamma=float(gamma),
+                tau=float(tau),
+                alpha=float(alpha),
+                auto_alpha=bool(auto_alpha),
+                target_entropy=(float(target_entropy) if target_entropy is not None else None),
+                action_scale=action_scale,
+                action_bias=action_bias,
+            )
+        self.cfg = cfg
+
         if device is None:
             if torch.cuda.is_available():
                 device = torch.device("cuda")
@@ -54,18 +90,25 @@ class SACAgent:
 
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.action_scale = action_scale
-        self.action_bias = action_bias
-        self.lr = lr
-        self.gamma = gamma
-        self.tau = tau
-        self.alpha = float(alpha)
-        self.auto_alpha = bool(auto_alpha)
+        self.action_scale = self.cfg.action_scale
+        self.action_bias = self.cfg.action_bias
+        self.lr = float(self.cfg.lr)
+        self.gamma = float(self.cfg.gamma)
+        self.tau = float(self.cfg.tau)
+        self.alpha = float(self.cfg.alpha)
+        self.auto_alpha = bool(self.cfg.auto_alpha)
 
         # Common default in SAC-v2: target_entropy = -|A|
-        self.target_entropy = float(target_entropy) if target_entropy is not None else -float(action_dim)
+        self.target_entropy = (
+            float(self.cfg.target_entropy) if self.cfg.target_entropy is not None else -float(action_dim)
+        )
 
-        self.actor = Actor(state_dim, action_dim, action_scale=action_scale, action_bias=action_bias).to(self.device)
+        self.actor = Actor(
+            state_dim,
+            action_dim,
+            action_scale=self.action_scale,
+            action_bias=self.action_bias,
+        ).to(self.device)
         self.critic = Critic(state_dim, action_dim).to(self.device)
         self.critic_target = Critic(state_dim, action_dim).to(self.device)
 
@@ -73,8 +116,8 @@ class SACAgent:
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         # create optimizers for the actor and critic networks
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.lr)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.lr)
 
         # Optional: automatic entropy temperature tuning (SAC-v2)
         # optimize log_alpha to keep policy entropy close to target_entropy.
@@ -85,7 +128,7 @@ class SACAgent:
                 dtype=torch.float32,
                 requires_grad=True,
             )
-            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
         else:
             self.log_alpha = None
             self.alpha_optimizer = None
@@ -196,6 +239,25 @@ class SACAgent:
         return {
             "state_dim": self.state_dim,
             "action_dim": self.action_dim,
+            "cfg": {
+                "lr": float(self.lr),
+                "gamma": float(self.gamma),
+                "tau": float(self.tau),
+                "alpha": float(self.alpha),
+                "auto_alpha": bool(self.auto_alpha),
+                # store the resolved value (could be auto default)
+                "target_entropy": float(self.target_entropy),
+                "action_scale": (
+                    self.action_scale.detach().cpu().tolist()
+                    if isinstance(self.action_scale, torch.Tensor)
+                    else self.action_scale
+                ),
+                "action_bias": (
+                    self.action_bias.detach().cpu().tolist()
+                    if isinstance(self.action_bias, torch.Tensor)
+                    else self.action_bias
+                ),
+            },
             "action_scale": (
                 self.action_scale.detach().cpu().tolist()
                 if isinstance(self.action_scale, torch.Tensor)
@@ -225,14 +287,42 @@ class SACAgent:
     def load_state(self, state):
         self.state_dim = state["state_dim"]
         self.action_dim = state["action_dim"]
-        self.action_scale = state.get("action_scale", 1.0)
-        self.action_bias = state.get("action_bias", 0.0)
-        self.lr = state["lr"]
-        self.gamma = state["gamma"]
-        self.tau = state["tau"]
-        self.alpha = state["alpha"]
-        self.auto_alpha = state.get("auto_alpha", False)
-        self.target_entropy = state.get("target_entropy", -float(self.action_dim))
+
+        # Preferred path: load config if present. Backward-compatible with older checkpoints.
+        cfg_dict = state.get("cfg", None)
+        if isinstance(cfg_dict, dict):
+            self.cfg = SACConfig(
+                lr=float(cfg_dict.get("lr", 3e-4)),
+                gamma=float(cfg_dict.get("gamma", 0.99)),
+                tau=float(cfg_dict.get("tau", 0.005)),
+                alpha=float(cfg_dict.get("alpha", 0.2)),
+                auto_alpha=bool(cfg_dict.get("auto_alpha", False)),
+                target_entropy=float(cfg_dict.get("target_entropy", -float(self.action_dim))),
+                action_scale=cfg_dict.get("action_scale", 1.0),
+                action_bias=cfg_dict.get("action_bias", 0.0),
+            )
+        else:
+            self.cfg = SACConfig(
+                lr=float(state.get("lr", 3e-4)),
+                gamma=float(state.get("gamma", 0.99)),
+                tau=float(state.get("tau", 0.005)),
+                alpha=float(state.get("alpha", 0.2)),
+                auto_alpha=bool(state.get("auto_alpha", False)),
+                target_entropy=state.get("target_entropy", -float(self.action_dim)),
+                action_scale=state.get("action_scale", 1.0),
+                action_bias=state.get("action_bias", 0.0),
+            )
+
+        self.action_scale = self.cfg.action_scale
+        self.action_bias = self.cfg.action_bias
+        self.lr = float(self.cfg.lr)
+        self.gamma = float(self.cfg.gamma)
+        self.tau = float(self.cfg.tau)
+        self.alpha = float(self.cfg.alpha)
+        self.auto_alpha = bool(self.cfg.auto_alpha)
+        self.target_entropy = (
+            float(self.cfg.target_entropy) if self.cfg.target_entropy is not None else -float(self.action_dim)
+        )
 
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])

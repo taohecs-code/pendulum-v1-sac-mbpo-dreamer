@@ -15,7 +15,7 @@ How to use:
     # Returns PyTorch Tensors automatically pushed to the correct device (CPU/GPU)
     states, actions, rewards, next_states, dones = buffer.sample(batch_size=256)
 ============================================================
-Updare:
+Update:
 add sample_sequences method to sample contiguous sequences for sequence models (e.g., Dreamer world model).
 """
 

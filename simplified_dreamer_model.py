@@ -41,12 +41,21 @@ class DreamerConfig:
     critic_lr: float = 3e-4
 
     # World model loss weights / stabilizers
+    # kl_beta is the coefficient on the KL term. In this project it can be made adaptive (dual update)
+    # to keep KL close to a target value.
     kl_beta: float = 1.0
     continuation_beta: float = 1.0
 
     # KL stabilization tricks commonly used in Dreamer implementations.
     free_nats: float = 3.0
     kl_balance: float = 0.8  # 1.0 => posterior-only grads, 0.0 => prior-only grads
+
+    # Optional: automatically adapt kl_beta to keep raw KL near target_kl (dual update).
+    auto_kl_beta: bool = True
+    target_kl: float = 3.0
+    kl_beta_lr: float = 1e-4
+    kl_beta_min: float = 0.0
+    kl_beta_max: float = 10.0
 
     # Likelihood / distribution settings.
     # If learn_std=True, decoder/reward head predict log_std; otherwise fixed stds are used.
@@ -232,8 +241,8 @@ class WorldModel(nn.Module):
         Returns a dict with:
         - features / rssm_features: (B, T, deter_dim + stoch_dim)
         - obs_hat: (B, T, obs_dim)
-        - reward_hat: (B, T, 1)
-        - reward_log_std: (B, T, 1) (useful for debugging learned uncertainty)
+        - reward_pred_mean: (B, T, 1)
+        - reward_pred_log_std: (B, T, 1) (useful for debugging learned uncertainty)
         - obs_log_std_mean: (B, T, 1) mean log_std across obs dims (useful for debugging)
         - obs_nll: scalar (mean over batch and time)
         - obs_mse: scalar (mean over batch and time)
@@ -361,9 +370,13 @@ class WorldModel(nn.Module):
             "features": rssm_feats_t,  # keep original key for compatibility
             "rssm_features": rssm_feats_t,
             "obs_hat": obs_hat_t,
+            # Prefer explicit naming, but keep legacy keys for compatibility.
+            "reward_pred_mean": r_hat_t,
+            "reward_pred_log_std": r_log_std_t,
             "reward_hat": r_hat_t,
             "reward_log_std": r_log_std_t,
             "obs_log_std_mean": obs_log_std_mean_t,
+            "continuation_pred_logit": continuation_logit_t,
             "continuation_logit": continuation_logit_t,
             "obs_nll": obs_nll,
             "obs_mse": obs_mse,

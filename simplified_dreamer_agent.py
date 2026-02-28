@@ -5,7 +5,7 @@ Simplified Dreamer-style agent for low-dimensional.
 2. RSSM (Recurrent State-Space Model): models stochastic action-conditioned transitions in latent space for multi-step imagination.
 3. World model training (paper-shaped, simplified):
    - observation loss: diagonal Gaussian NLL (plus logged MSE for diagnostics)
-   - reward loss: diagonal Gaussian NLL (uses `reward_log_std` if `cfg.learn_std=True`)
+  - reward loss: diagonal Gaussian NLL (uses `reward_pred_log_std` if `cfg.learn_std=True`)
    - continuation loss: BCE on p(cont_t) vs (1 - done_t)
    - KL regularizer: KL(q||p) with optional balancing + free nats
 4. Latent-space actor-critic optimization:
@@ -113,7 +113,9 @@ class DreamerAgent:
         self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
 
         self.wm = WorldModel(obs_dim, action_dim, self.cfg).to(self.device)
+
         rssm_feat_dim = self.cfg.deter_dim + self.cfg.latent_dim
+
         self.actor = Actor(
             rssm_feat_dim,
             action_dim,
@@ -123,14 +125,19 @@ class DreamerAgent:
             log_std_min=float(getattr(self.cfg, "log_std_min", -5.0)),
             log_std_max=float(getattr(self.cfg, "log_std_max", 2.0)),
         ).to(self.device)
+
         self.critic = Critic(rssm_feat_dim, hidden_dim=self.cfg.hidden_dim).to(self.device)
         self.critic_target = Critic(rssm_feat_dim, hidden_dim=self.cfg.hidden_dim).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
+        
         self.critic_target.eval()
 
         self.wm_opt = torch.optim.Adam(self.wm.parameters(), lr=self.cfg.model_lr)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=self.cfg.actor_lr)
         self.critic_opt = torch.optim.Adam(self.critic.parameters(), lr=self.cfg.critic_lr)
+
+        # Optional: adaptive KL coefficient (dual update). Initialize from cfg.kl_beta.
+        self._kl_beta_value = float(getattr(self.cfg, "kl_beta", 1.0))
 
         self._last_feat = None
         # Recurrent latent state for acting in the real environment (Dreamer-style).
@@ -205,9 +212,9 @@ class DreamerAgent:
         self.wm.train()
 
         out = self.wm.forward_reconstruction(obs_seq, act_seq)
-        pred_reward = out["reward_hat"]
-        pred_reward_log_std = out["reward_log_std"]
-        pred_continuation_logit = out["continuation_logit"]
+        pred_reward = out.get("reward_pred_mean", out["reward_hat"])
+        pred_reward_log_std = out.get("reward_pred_log_std", out["reward_log_std"])
+        pred_continuation_logit = out.get("continuation_pred_logit", out["continuation_logit"])
 
         # Observation loss (Gaussian NLL) is computed inside the world model forward pass.
         obs_nll = out["obs_nll"]
@@ -228,18 +235,34 @@ class DreamerAgent:
         kl_loss = out["kl_loss"]
         kl_raw = out["kl_raw"]
 
+        # Choose KL coefficient (fixed or adaptive).
+        if bool(getattr(self.cfg, "auto_kl_beta", True)):
+            kl_beta = float(self._kl_beta_value)
+        else:
+            kl_beta = float(getattr(self.cfg, "kl_beta", 1.0))
+
         # Total world-model loss (Dreamer-style core pieces):
         # - obs_nll: observation reconstruction likelihood
         # - reward_nll: reward prediction likelihood
         # - continuation_beta * continuation_loss: continuation/discount modeling
         # - kl_beta * kl_loss: regularize posterior against prior
         total_loss = (
-            obs_nll + reward_nll + self.cfg.continuation_beta * continuation_loss + self.cfg.kl_beta * kl_loss
+            obs_nll + reward_nll + self.cfg.continuation_beta * continuation_loss + kl_beta * kl_loss
         )
 
         self.wm_opt.zero_grad()
         total_loss.backward()
         self.wm_opt.step()
+
+        # Dual update for kl_beta (keeps raw KL near target_kl).
+        if bool(getattr(self.cfg, "auto_kl_beta", True)):
+            target_kl = float(getattr(self.cfg, "target_kl", float(getattr(self.cfg, "free_nats", 3.0))))
+            beta_lr = float(getattr(self.cfg, "kl_beta_lr", 1e-4))
+            beta_min = float(getattr(self.cfg, "kl_beta_min", 0.0))
+            beta_max = float(getattr(self.cfg, "kl_beta_max", 10.0))
+            kl_val = float(kl_raw.detach().item())
+            self._kl_beta_value = float(np.clip(self._kl_beta_value + beta_lr * (kl_val - target_kl), beta_min, beta_max))
+
         return {
             "wm/total_loss": float(total_loss.item()),
             # Backward-compatible alias (older dashboards may still look for wm/loss).
@@ -255,6 +278,7 @@ class DreamerAgent:
             "wm/obs_avg_log_std": float(out["obs_log_std_mean"].mean().item()),
             "wm/kl": float(kl_loss.item()),
             "wm/kl_raw": float(kl_raw.item()),
+            "wm/kl_beta": float(self._kl_beta_value if bool(getattr(self.cfg, "auto_kl_beta", True)) else kl_beta),
         }
 
     def train_actor_critic(
@@ -282,7 +306,7 @@ class DreamerAgent:
 
         horizon = int(self.cfg.horizon)
         gamma = float(self.cfg.gamma)
-        lambda_ = float(getattr(self.cfg, "lambda_", 0.95))
+        lambda_ = float(getattr(self.cfg, "lambda_", 0.95)) 
 
         # 2) Imagine forward for H steps using the RSSM prior and actor actions.
         imagined_rewards = []
@@ -305,17 +329,25 @@ class DreamerAgent:
         rssm_feature = self.wm.rssm_features(deter, stoch)
         imagined_features.append(rssm_feature)
 
+        # ======= imagination rollout =======
         for _ in range(horizon):
             rssm_feature = self.wm.rssm_features(deter, stoch)
+
             action, action_logp = self.actor(rssm_feature, deterministic=False)
+
             deter, stoch = self.wm.rssm.prior_step(deter, stoch, action)
+
             next_feature = self.wm.rssm_features(deter, stoch)
+
             reward_out = self.wm.reward_head(next_feature)
+
             if bool(getattr(self.cfg, "learn_std", True)):
                 reward_pred, _ = torch.chunk(reward_out, 2, dim=-1)
             else:
                 reward_pred = reward_out
+
             continuation_prob = torch.sigmoid(self.wm.continuation_head(next_feature))
+
             imagined_rewards.append(reward_pred)
             imagined_continuation_probs.append(continuation_prob)
             imagined_features.append(next_feature)
@@ -331,10 +363,13 @@ class DreamerAgent:
         # differentiable w.r.t. the actor through the imagined trajectory.
         _set_requires_grad(self.wm, False)
         _set_requires_grad(self.critic_target, False)
+        
         try:
             # Compute V(z_t) along the imagined trajectory (parameters frozen, gradients flow to inputs).
-            b, hp1, d = feature_seq_imag.shape
-            value_seq_imag = self.critic_target(feature_seq_imag.reshape(b * hp1, d)).reshape(b, hp1, 1)  # (B, H+1, 1)
+            b, horizon_plus_one, d = feature_seq_imag.shape
+            value_seq_imag = self.critic_target(feature_seq_imag.reshape(b * horizon_plus_one, d)).reshape(
+                b, horizon_plus_one, 1
+            )  # (B, H+1, 1)
 
             actor_returns = torch.zeros_like(reward_seq_imag)  # (B, H, 1)
 
@@ -364,8 +399,10 @@ class DreamerAgent:
         with torch.no_grad():
             # Detach imagined features so the value-loss gradients do not flow back into the imagination trajectory.
             feature_seq_detached = feature_seq_imag.detach()
-            b, hp1, d = feature_seq_detached.shape
-            value_seq_target = self.critic_target(feature_seq_detached.reshape(b * hp1, d)).reshape(b, hp1, 1).detach()
+            b, horizon_plus_one, d = feature_seq_detached.shape
+            value_seq_target = self.critic_target(feature_seq_detached.reshape(b * horizon_plus_one, d)).reshape(
+                b, horizon_plus_one, 1
+            ).detach()
 
             target_returns = torch.zeros_like(reward_seq_imag)
             G = value_seq_target[:, -1]
@@ -375,8 +412,10 @@ class DreamerAgent:
                 G = reward_seq_imag[:, i].detach() + discount * ((1.0 - lambda_) * v_next + lambda_ * G)
                 target_returns[:, i] = G
 
-        b, hp1, d = feature_seq_imag.shape
-        value_pred_seq = self.critic(feature_seq_imag.detach()[:, :-1].reshape(b * (hp1 - 1), d)).reshape(b, hp1 - 1, 1)
+        b, horizon_plus_one, d = feature_seq_imag.shape
+        value_pred_seq = self.critic(feature_seq_imag.detach()[:, :-1].reshape(b * (horizon_plus_one - 1), d)).reshape(
+            b, horizon_plus_one - 1, 1
+        )
         value_loss = F.mse_loss(value_pred_seq, target_returns)
         self.critic_opt.zero_grad()
         value_loss.backward()
@@ -404,7 +443,12 @@ class DreamerAgent:
                 "model_lr": self.cfg.model_lr,
                 "actor_lr": self.cfg.actor_lr,
                 "critic_lr": self.cfg.critic_lr,
-                "kl_beta": self.cfg.kl_beta,
+                "kl_beta": float(getattr(self.cfg, "kl_beta", 1.0)),
+                "auto_kl_beta": bool(getattr(self.cfg, "auto_kl_beta", True)),
+                "target_kl": float(getattr(self.cfg, "target_kl", 3.0)),
+                "kl_beta_lr": float(getattr(self.cfg, "kl_beta_lr", 1e-4)),
+                "kl_beta_min": float(getattr(self.cfg, "kl_beta_min", 0.0)),
+                "kl_beta_max": float(getattr(self.cfg, "kl_beta_max", 10.0)),
                 "continuation_beta": self.cfg.continuation_beta,
                 "free_nats": self.cfg.free_nats,
                 "kl_balance": self.cfg.kl_balance,
@@ -418,6 +462,7 @@ class DreamerAgent:
                 "actor_entropy_coef": float(getattr(self.cfg, "actor_entropy_coef", 0.0)),
                 "gamma": self.cfg.gamma,
             },
+            "kl_beta_value": float(self._kl_beta_value),
             "wm": self.wm.state_dict(),
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
@@ -428,6 +473,8 @@ class DreamerAgent:
         }
 
     def load_state(self, state: Dict[str, Any]) -> None:
+        if "kl_beta_value" in state:
+            self._kl_beta_value = float(state["kl_beta_value"])
         self.wm.load_state_dict(state["wm"])
         self.actor.load_state_dict(state["actor"])
         self.critic.load_state_dict(state["critic"])

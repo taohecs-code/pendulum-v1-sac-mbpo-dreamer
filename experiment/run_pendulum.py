@@ -36,7 +36,7 @@ try:
 except Exception:  # pragma: no cover
     wandb = None
 
-from sac_agent import SACAgent
+from sac_agent import SACAgent, SACConfig
 from buffer import ReplayBuffer
 from mbpo_agent import MBPOAgent, MBPOConfig
 from simplified_dreamer_agent import DreamerAgent, DreamerConfig
@@ -121,7 +121,7 @@ def evaluate_policy(
     env = gym.make(env_name)
     avg_reward = 0.0
     for ep in range(eval_episodes):
-        state, _ = env.reset(seed=seed + ep)
+        obs, _ = env.reset(seed=seed + ep)
         # Some agents (Dreamer-style) maintain recurrent state across steps and must be reset at episode boundaries.
         if hasattr(agent, "reset_episode") and callable(getattr(agent, "reset_episode")):
             agent.reset_episode()
@@ -129,8 +129,8 @@ def evaluate_policy(
         ep_reward = 0.0
         steps = 0
         while not done and steps < episode_max_steps:
-            action = agent.select_action(state, deterministic=True)
-            state, reward, terminated, truncated, _ = env.step(action)
+            action = agent.select_action(obs, deterministic=True)
+            obs, reward, terminated, truncated, _ = env.step(action)
             done = terminated or truncated
             ep_reward += float(reward)
             steps += 1
@@ -215,6 +215,11 @@ class ExperimentConfig:
 
     # Dreamer extras (paper-shaped stabilizers / likelihoods)
     dreamer_kl_beta: float = 1.0
+    dreamer_auto_kl_beta: bool = True
+    dreamer_target_kl: float = 3.0
+    dreamer_kl_beta_lr: float = 1e-4
+    dreamer_kl_beta_min: float = 0.0
+    dreamer_kl_beta_max: float = 10.0
     dreamer_continuation_beta: float = 1.0
     dreamer_free_nats: float = 3.0
     dreamer_kl_balance: float = 0.8
@@ -273,6 +278,15 @@ def parse_args() -> ExperimentConfig:
     # Dreamer extras (match DreamerConfig fields)
     dreamer_defaults = DreamerConfig()
     p.add_argument("--dreamer-kl-beta", type=float, default=float(dreamer_defaults.kl_beta))
+    p.add_argument(
+        "--dreamer-auto-kl-beta",
+        action=argparse.BooleanOptionalAction,
+        default=bool(getattr(dreamer_defaults, "auto_kl_beta", True)),
+    )
+    p.add_argument("--dreamer-target-kl", type=float, default=float(getattr(dreamer_defaults, "target_kl", 3.0)))
+    p.add_argument("--dreamer-kl-beta-lr", type=float, default=float(getattr(dreamer_defaults, "kl_beta_lr", 1e-4)))
+    p.add_argument("--dreamer-kl-beta-min", type=float, default=float(getattr(dreamer_defaults, "kl_beta_min", 0.0)))
+    p.add_argument("--dreamer-kl-beta-max", type=float, default=float(getattr(dreamer_defaults, "kl_beta_max", 10.0)))
     p.add_argument(
         "--dreamer-cont-beta",
         "--dreamer-continuation-beta",
@@ -338,6 +352,11 @@ def parse_args() -> ExperimentConfig:
         mbpo_top_k=args.mbpo_top_k,
         dreamer_seq_len=args.dreamer_seq_len,
         dreamer_kl_beta=float(args.dreamer_kl_beta),
+        dreamer_auto_kl_beta=bool(args.dreamer_auto_kl_beta),
+        dreamer_target_kl=float(args.dreamer_target_kl),
+        dreamer_kl_beta_lr=float(args.dreamer_kl_beta_lr),
+        dreamer_kl_beta_min=float(args.dreamer_kl_beta_min),
+        dreamer_kl_beta_max=float(args.dreamer_kl_beta_max),
         dreamer_continuation_beta=float(args.dreamer_continuation_beta),
         dreamer_free_nats=float(args.dreamer_free_nats),
         dreamer_kl_balance=float(args.dreamer_kl_balance),
@@ -390,15 +409,13 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     action_scale = (action_high - action_low) / 2.0
     action_bias = (action_high + action_low) / 2.0
 
-    agent = SACAgent(
-        state_dim,
-        action_dim,
+    sac_cfg = SACConfig(
         action_scale=action_scale,
         action_bias=action_bias,
-        device=device,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
     )
+    agent = SACAgent(state_dim, action_dim, device=device, cfg=sac_cfg)
     replay_buffer = ReplayBuffer(state_dim, action_dim)
 
     # Trackers
@@ -408,7 +425,7 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     convergence_step_stable_k = None
     consecutive_above = 0
 
-    state, _ = env.reset(seed=seed)
+    obs, _ = env.reset(seed=seed)
     ep_steps = 0
 
     t0 = time.time()
@@ -420,17 +437,17 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         if step < cfg.replay_prefill_steps:
             action = env.action_space.sample()
         else:
-            action = agent.select_action(state, deterministic=False)
+            action = agent.select_action(obs, deterministic=False)
 
-        next_state, reward, terminated, truncated, _ = env.step(action)
+        next_obs, reward, terminated, truncated, _ = env.step(action)
         # IMPORTANT: for learning/bootstrapping, treat only true environment termination as done.
         # Time-limit truncation should NOT cut off bootstrapping targets.
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
 
-        replay_buffer.add(state, action, reward, next_state, done_for_learning, episode_end=float(episode_end))
+        replay_buffer.add(obs, action, reward, next_obs, done_for_learning, episode_end=float(episode_end))
 
-        state = next_state
+        obs = next_obs
         ep_steps += 1
 
         # after prefill, train the agent using policy updates
@@ -441,7 +458,7 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             loss_dict = {}
 
         if episode_end or ep_steps >= cfg.episode_max_steps:
-            state, _ = env.reset()
+            obs, _ = env.reset()
             ep_steps = 0
 
         # periodic evaluation
@@ -601,16 +618,17 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     action_scale = (action_high - action_low) / 2.0
     action_bias = (action_high + action_low) / 2.0
 
+    mbpo_sac_cfg = SACConfig(
+        action_scale=action_scale,
+        action_bias=action_bias,
+        auto_alpha=cfg.sac_auto_alpha,
+        target_entropy=cfg.sac_target_entropy,
+    )
     agent = MBPOAgent(
         state_dim,
         action_dim,
         device=device,
-        sac_kwargs={
-            "action_scale": action_scale,
-            "action_bias": action_bias,
-            "auto_alpha": cfg.sac_auto_alpha,
-            "target_entropy": cfg.sac_target_entropy,
-        },
+        sac_cfg=mbpo_sac_cfg,
         mbpo_cfg=MBPOConfig(
             horizon=cfg.horizon,
             model_ensemble_size=cfg.mbpo_ensemble_size,
@@ -627,7 +645,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     convergence_step_stable_k = None
     consecutive_above = 0
 
-    state, _ = env.reset(seed=seed)
+    obs, _ = env.reset(seed=seed)
     ep_steps = 0
 
     t0 = time.time()
@@ -637,14 +655,14 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         if step < cfg.replay_prefill_steps:
             action = env.action_space.sample()
         else:
-            action = agent.select_action(state, deterministic=False)
+            action = agent.select_action(obs, deterministic=False)
 
-        next_state, reward, terminated, truncated, _ = env.step(action)
+        next_obs, reward, terminated, truncated, _ = env.step(action)
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
 
-        replay_buffer.add(state, action, reward, next_state, done_for_learning, episode_end=float(episode_end))
-        state = next_state
+        replay_buffer.add(obs, action, reward, next_obs, done_for_learning, episode_end=float(episode_end))
+        obs = next_obs
         ep_steps += 1
 
         # Updates (after warm-up)
@@ -674,7 +692,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             loss_dict.update({f"synthetic/{k}": v for k, v in syn_losses.items()})
 
         if episode_end or ep_steps >= cfg.episode_max_steps:
-            state, _ = env.reset()
+            obs, _ = env.reset()
             ep_steps = 0
 
         if step % cfg.eval_frequency_steps == 0 and step >= cfg.replay_prefill_steps:
@@ -843,6 +861,11 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         cfg=DreamerConfig(
             horizon=cfg.horizon,
             kl_beta=cfg.dreamer_kl_beta,
+            auto_kl_beta=cfg.dreamer_auto_kl_beta,
+            target_kl=cfg.dreamer_target_kl,
+            kl_beta_lr=cfg.dreamer_kl_beta_lr,
+            kl_beta_min=cfg.dreamer_kl_beta_min,
+            kl_beta_max=cfg.dreamer_kl_beta_max,
             continuation_beta=cfg.dreamer_continuation_beta,
             free_nats=cfg.dreamer_free_nats,
             kl_balance=cfg.dreamer_kl_balance,
@@ -864,7 +887,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     convergence_step_stable_k = None
     consecutive_above = 0
 
-    state, _ = env.reset(seed=seed)
+    obs, _ = env.reset(seed=seed)
     agent.reset_episode()
     ep_steps = 0
 
@@ -875,13 +898,13 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         if step < cfg.replay_prefill_steps:
             action = env.action_space.sample()
         else:
-            action = agent.select_action(state, deterministic=False)
+            action = agent.select_action(obs, deterministic=False)
 
-        next_state, reward, terminated, truncated, _ = env.step(action)
+        next_obs, reward, terminated, truncated, _ = env.step(action)
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
-        replay_buffer.add(state, action, reward, next_state, done_for_learning, episode_end=float(episode_end))
-        state = next_state
+        replay_buffer.add(obs, action, reward, next_obs, done_for_learning, episode_end=float(episode_end))
+        obs = next_obs
         ep_steps += 1
 
         loss_dict: Dict[str, float] = {}
@@ -903,7 +926,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             loss_dict.update(ac_losses)
 
         if episode_end or ep_steps >= cfg.episode_max_steps:
-            state, _ = env.reset()
+            obs, _ = env.reset()
             agent.reset_episode()
             ep_steps = 0
 
