@@ -119,23 +119,33 @@ class MBPOAgent:
         batch_rewards = []
         batch_next_states = []
         batch_dones = []
+        done_so_far = torch.zeros((s.shape[0], 1), device=device, dtype=s.dtype)
 
         for _ in range(horizon):
             # Vectorized policy action via actor (stochastic during training).
             st = s
             action_t, _ = self.policy.actor(st, deterministic=False)  # type: ignore[attr-defined]
-            a_t = action_t
+            # For already-terminated synthetic states, use a dummy action (absorbing state convention).
+            already_done = done_so_far > 0.5
+            a_t = torch.where(already_done.expand_as(action_t), torch.zeros_like(action_t), action_t)
 
-            ns, r = self.model.predict(st, a_t)
-            done = torch.zeros((st.shape[0], 1), device=device, dtype=st.dtype)
+            ns_pred, r_pred, done_pred = self.model.predict(st, a_t)
+            done_pred = (done_pred > 0.5).to(dtype=st.dtype)
+            done_t = torch.clamp(done_so_far + done_pred, 0.0, 1.0)
+
+            # Absorbing / terminal handling for synthetic rollouts:
+            # once done=1, keep state fixed and reward=0 for remaining rollout steps.
+            ns = torch.where(already_done, st, ns_pred)
+            r = torch.where(already_done, torch.zeros_like(r_pred), r_pred)
 
             batch_states.append(st)
             batch_actions.append(a_t)
             batch_rewards.append(r)
             batch_next_states.append(ns)
-            batch_dones.append(done)
+            batch_dones.append(done_t)
 
             s = ns
+            done_so_far = done_t
 
         return (
             torch.cat(batch_states, dim=0),

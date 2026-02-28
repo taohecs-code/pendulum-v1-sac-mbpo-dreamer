@@ -687,6 +687,9 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
                 {
                     "model/loss": model_stats.loss,
                     "model/nll": model_stats.nll,
+                    "model/terminated_bce": getattr(model_stats, "terminated_bce", 0.0),
+                    "model/terminated_acc": getattr(model_stats, "terminated_acc", 0.0),
+                    "model/terminated_rate": getattr(model_stats, "terminated_rate", 0.0),
                     "model/mse_next_state": model_stats.mse_next_state,
                     "model/mse_reward": model_stats.mse_reward,
                     "model/avg_log_std": model_stats.avg_log_std,
