@@ -448,6 +448,9 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     convergence_step = None
     convergence_step_stable_k = None
     consecutive_above = 0
+    best_eval_return = -float("inf")
+    best_ckpt_path: Optional[Path] = None
+    best_ckpt_step: Optional[int] = None
 
     obs, _ = env.reset(seed=seed)
     ep_steps = 0
@@ -496,6 +499,29 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             )
             eval_steps.append(step)
             eval_returns.append(eval_return)
+            if eval_return > best_eval_return:
+                best_eval_return = eval_return
+                best_ckpt_step = step
+                payload = {
+                    "algo": "sac",
+                    "seed": seed,
+                    "step": step,
+                    "env_name": cfg.env_name,
+                    "agent": agent.get_state(),
+                }
+                best_ckpt_path = save_checkpoint(ckpt_root, "best_eval.pt", payload)
+                log_checkpoint_artifact(
+                    cfg,
+                    best_ckpt_path,
+                    aliases=("latest", "best-eval"),
+                    metadata={
+                        "algo": "sac",
+                        "seed": seed,
+                        "step": step,
+                        "env_name": cfg.env_name,
+                        "best_eval_return": float(eval_return),
+                    },
+                )
 
             elapsed_s = time.time() - t0
             steps_per_sec = (step + 1) / max(elapsed_s, 1e-8)
@@ -602,6 +628,19 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         seed=seed,
         episode_max_steps=cfg.episode_max_steps,
     )
+    best_checkpoint_return_mean = None
+    if best_ckpt_path is not None and best_ckpt_path.exists():
+        best_payload = torch.load(best_ckpt_path, map_location=device)
+        agent.load_state(best_payload["agent"])
+        best_checkpoint_return_mean = float(
+            evaluate_policy(
+                agent,
+                env_name=cfg.env_name,
+                eval_episodes=cfg.eval_episodes_final,
+                seed=seed,
+                episode_max_steps=cfg.episode_max_steps,
+            )
+        )
     asymptotic = None
     if len(eval_returns) > 0:
         window = min(cfg.asymptotic_window_evals, len(eval_returns))
@@ -611,12 +650,18 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             wandb.summary["eval/convergence_step"] = convergence_step
             wandb.summary["eval/final_return_mean"] = float(final_return_mean)
             wandb.summary["eval/convergence_step_stable_k"] = convergence_step_stable_k
+            wandb.summary["eval/best_eval_return"] = (
+                float(best_eval_return) if best_eval_return > -float("inf") else None
+            )
+            wandb.summary["eval/best_checkpoint_step"] = best_ckpt_step
+            wandb.summary["eval/best_checkpoint_return_mean"] = best_checkpoint_return_mean
             # Also log as a final history point for convenience.
             wandb.log(
                 {
                     "train/step": cfg.train_max_steps,
                     "eval/final_return_mean": float(final_return_mean),
                     "eval/convergence_step_stable_k": convergence_step_stable_k,
+                    "eval/best_checkpoint_return_mean": best_checkpoint_return_mean,
                 },
                 step=cfg.train_max_steps,
             )
@@ -629,6 +674,9 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "convergence_step": convergence_step,
         "final_return_mean": float(final_return_mean),
         "convergence_step_stable_k": convergence_step_stable_k,
+        "best_checkpoint_return_mean": best_checkpoint_return_mean,
+        "best_eval_return": (float(best_eval_return) if best_eval_return > -float("inf") else None),
+        "best_checkpoint_step": best_ckpt_step,
     }
 
 
@@ -669,6 +717,9 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     convergence_step = None
     convergence_step_stable_k = None
     consecutive_above = 0
+    best_eval_return = -float("inf")
+    best_ckpt_path: Optional[Path] = None
+    best_ckpt_step: Optional[int] = None
 
     obs, _ = env.reset(seed=seed)
     ep_steps = 0
@@ -734,6 +785,31 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             )
             eval_steps.append(step)
             eval_returns.append(eval_return)
+            if eval_return > best_eval_return:
+                best_eval_return = eval_return
+                best_ckpt_step = step
+                payload = {
+                    "algo": "mbpo",
+                    "seed": seed,
+                    "step": step,
+                    "env_name": cfg.env_name,
+                    "horizon": cfg.horizon,
+                    "agent": agent.get_state(),
+                }
+                best_ckpt_path = save_checkpoint(ckpt_root, "best_eval.pt", payload)
+                log_checkpoint_artifact(
+                    cfg,
+                    best_ckpt_path,
+                    aliases=("latest", "best-eval"),
+                    metadata={
+                        "algo": "mbpo",
+                        "seed": seed,
+                        "step": step,
+                        "env_name": cfg.env_name,
+                        "horizon": cfg.horizon,
+                        "best_eval_return": float(eval_return),
+                    },
+                )
 
             if wandb and wandb.run is not None:
                 wandb.log(
@@ -841,6 +917,19 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         seed=seed,
         episode_max_steps=cfg.episode_max_steps,
     )
+    best_checkpoint_return_mean = None
+    if best_ckpt_path is not None and best_ckpt_path.exists():
+        best_payload = torch.load(best_ckpt_path, map_location=device)
+        agent.load_state(best_payload["agent"])
+        best_checkpoint_return_mean = float(
+            evaluate_policy(
+                agent,
+                env_name=cfg.env_name,
+                eval_episodes=cfg.eval_episodes_final,
+                seed=seed,
+                episode_max_steps=cfg.episode_max_steps,
+            )
+        )
 
     asymptotic = None
     if len(eval_returns) > 0:
@@ -851,11 +940,17 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             wandb.summary["eval/convergence_step"] = convergence_step
             wandb.summary["eval/final_return_mean"] = float(final_return_mean)
             wandb.summary["eval/convergence_step_stable_k"] = convergence_step_stable_k
+            wandb.summary["eval/best_eval_return"] = (
+                float(best_eval_return) if best_eval_return > -float("inf") else None
+            )
+            wandb.summary["eval/best_checkpoint_step"] = best_ckpt_step
+            wandb.summary["eval/best_checkpoint_return_mean"] = best_checkpoint_return_mean
             wandb.log(
                 {
                     "train/step": cfg.train_max_steps,
                     "eval/final_return_mean": float(final_return_mean),
                     "eval/convergence_step_stable_k": convergence_step_stable_k,
+                    "eval/best_checkpoint_return_mean": best_checkpoint_return_mean,
                 },
                 step=cfg.train_max_steps,
             )
@@ -868,6 +963,9 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "convergence_step": convergence_step,
         "final_return_mean": float(final_return_mean),
         "convergence_step_stable_k": convergence_step_stable_k,
+        "best_checkpoint_return_mean": best_checkpoint_return_mean,
+        "best_eval_return": (float(best_eval_return) if best_eval_return > -float("inf") else None),
+        "best_checkpoint_step": best_ckpt_step,
     }
 
 
@@ -916,6 +1014,9 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     convergence_step = None
     convergence_step_stable_k = None
     consecutive_above = 0
+    best_eval_return = -float("inf")
+    best_ckpt_path: Optional[Path] = None
+    best_ckpt_step: Optional[int] = None
 
     obs, _ = env.reset(seed=seed)
     agent.reset_episode()
@@ -970,6 +1071,31 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             )
             eval_steps.append(step)
             eval_returns.append(eval_return)
+            if eval_return > best_eval_return:
+                best_eval_return = eval_return
+                best_ckpt_step = step
+                payload = {
+                    "algo": "dreamer",
+                    "seed": seed,
+                    "step": step,
+                    "env_name": cfg.env_name,
+                    "horizon": cfg.horizon,
+                    "agent": agent.get_state(),
+                }
+                best_ckpt_path = save_checkpoint(ckpt_root, "best_eval.pt", payload)
+                log_checkpoint_artifact(
+                    cfg,
+                    best_ckpt_path,
+                    aliases=("latest", "best-eval"),
+                    metadata={
+                        "algo": "dreamer",
+                        "seed": seed,
+                        "step": step,
+                        "env_name": cfg.env_name,
+                        "horizon": cfg.horizon,
+                        "best_eval_return": float(eval_return),
+                    },
+                )
 
             if wandb and wandb.run is not None:
                 wandb.log(
@@ -1077,6 +1203,19 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         seed=seed,
         episode_max_steps=cfg.episode_max_steps,
     )
+    best_checkpoint_return_mean = None
+    if best_ckpt_path is not None and best_ckpt_path.exists():
+        best_payload = torch.load(best_ckpt_path, map_location=device)
+        agent.load_state(best_payload["agent"])
+        best_checkpoint_return_mean = float(
+            evaluate_policy(
+                agent,
+                env_name=cfg.env_name,
+                eval_episodes=cfg.eval_episodes_final,
+                seed=seed,
+                episode_max_steps=cfg.episode_max_steps,
+            )
+        )
 
     asymptotic = None
     if len(eval_returns) > 0:
@@ -1087,11 +1226,17 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             wandb.summary["eval/convergence_step"] = convergence_step
             wandb.summary["eval/final_return_mean"] = float(final_return_mean)
             wandb.summary["eval/convergence_step_stable_k"] = convergence_step_stable_k
+            wandb.summary["eval/best_eval_return"] = (
+                float(best_eval_return) if best_eval_return > -float("inf") else None
+            )
+            wandb.summary["eval/best_checkpoint_step"] = best_ckpt_step
+            wandb.summary["eval/best_checkpoint_return_mean"] = best_checkpoint_return_mean
             wandb.log(
                 {
                     "train/step": cfg.train_max_steps,
                     "eval/final_return_mean": float(final_return_mean),
                     "eval/convergence_step_stable_k": convergence_step_stable_k,
+                    "eval/best_checkpoint_return_mean": best_checkpoint_return_mean,
                 },
                 step=cfg.train_max_steps,
             )
@@ -1104,6 +1249,9 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         "convergence_step": convergence_step,
         "final_return_mean": float(final_return_mean),
         "convergence_step_stable_k": convergence_step_stable_k,
+        "best_checkpoint_return_mean": best_checkpoint_return_mean,
+        "best_eval_return": (float(best_eval_return) if best_eval_return > -float("inf") else None),
+        "best_checkpoint_step": best_ckpt_step,
     }
 
 
