@@ -16,6 +16,7 @@ import argparse
 import dataclasses
 import json
 import os
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -76,6 +77,22 @@ def pick_device(device: Optional[str] = None) -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
+
+
+def set_global_seed(seed: int) -> None:
+    """
+    Set process-wide random seeds for reproducibility across Python/NumPy/PyTorch.
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    # Improve determinism for CUDA convolutions (harmless for this MLP-heavy project).
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 def format_step_k(step: int) -> str:
@@ -1261,6 +1278,7 @@ def main() -> None:
 
     all_results = []
     for seed in cfg.seeds:
+        set_global_seed(int(seed))
         run = init_wandb(cfg, seed)
         try:
             if algo == "sac":
