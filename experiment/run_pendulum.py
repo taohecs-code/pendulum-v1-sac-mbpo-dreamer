@@ -647,7 +647,7 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     )
     best_checkpoint_return_mean = None
     if best_ckpt_path is not None and best_ckpt_path.exists():
-        best_payload = torch.load(best_ckpt_path, map_location=device)
+        best_payload = torch.load(best_ckpt_path, map_location=device, weights_only=False)
         agent.load_state(best_payload["agent"])
         best_checkpoint_return_mean = float(
             evaluate_policy(
@@ -936,7 +936,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     )
     best_checkpoint_return_mean = None
     if best_ckpt_path is not None and best_ckpt_path.exists():
-        best_payload = torch.load(best_ckpt_path, map_location=device)
+        best_payload = torch.load(best_ckpt_path, map_location=device, weights_only=False)
         agent.load_state(best_payload["agent"])
         best_checkpoint_return_mean = float(
             evaluate_policy(
@@ -1222,7 +1222,7 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
     )
     best_checkpoint_return_mean = None
     if best_ckpt_path is not None and best_ckpt_path.exists():
-        best_payload = torch.load(best_ckpt_path, map_location=device)
+        best_payload = torch.load(best_ckpt_path, map_location=device, weights_only=False)
         agent.load_state(best_payload["agent"])
         best_checkpoint_return_mean = float(
             evaluate_policy(
