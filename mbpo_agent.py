@@ -36,8 +36,10 @@ class MBPOConfig:
     model_top_k: int = 5
     model_hidden_dim: int = 256
     model_lr: float = 1e-3
+    model_weight_decay: float = 1e-4
+    model_normalize: bool = True
     model_train_steps_per_env_step: int = 1
-    synthetic_updates_per_env_step: int = 1
+    synthetic_updates_per_env_step: int = 20
     # Start-state sampling for model rollouts:
     # sample s0 from the most recent fraction of replay (MBPO-style).
     start_state_recent_frac: float = 0.25
@@ -83,8 +85,13 @@ class MBPOAgent:
             ensemble_size=self.cfg.model_ensemble_size,
             hidden_dim=self.cfg.model_hidden_dim,
             top_k_models=self.cfg.model_top_k,
+            normalize_inputs_targets=self.cfg.model_normalize,
         ).to(self.policy.device)
-        self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=self.cfg.model_lr)
+        self.model_optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=self.cfg.model_lr,
+            weight_decay=float(getattr(self.cfg, "model_weight_decay", 0.0)),
+        )
 
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -284,6 +291,8 @@ class MBPOAgent:
                 "model_top_k": self.cfg.model_top_k,
                 "model_hidden_dim": self.cfg.model_hidden_dim,
                 "model_lr": self.cfg.model_lr,
+                "model_weight_decay": float(getattr(self.cfg, "model_weight_decay", 0.0)),
+                "model_normalize": bool(getattr(self.cfg, "model_normalize", True)),
                 "model_train_steps_per_env_step": self.cfg.model_train_steps_per_env_step,
                 "synthetic_updates_per_env_step": self.cfg.synthetic_updates_per_env_step,
                 "start_state_recent_frac": float(getattr(self.cfg, "start_state_recent_frac", 0.25)),

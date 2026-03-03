@@ -121,17 +121,69 @@ class DynamicsEnsemble(nn.Module):
         ensemble_size: int = 7,
         hidden_dim: int = 256,
         top_k_models: int = 5,
+        normalize_inputs_targets: bool = True,
+        normalizer_eps: float = 1e-6,
+        normalizer_momentum: float = 0.01,
     ):
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.ensemble_size = ensemble_size
         self.top_k_models = top_k_models
+        self.normalize_inputs_targets = bool(normalize_inputs_targets)
+        self.normalizer_eps = float(normalizer_eps)
+        self.normalizer_momentum = float(normalizer_momentum)
         self.models = nn.ModuleList(
             [DynamicsModel(state_dim, action_dim, hidden_dim=hidden_dim) for _ in range(ensemble_size)]
         )
         # Avoid out-of-range indices when top_k_models > ensemble_size
         self.selected_model_indices: List[int] = list(range(min(top_k_models, ensemble_size)))
+        self.register_buffer("input_mean", torch.zeros(state_dim + action_dim))
+        self.register_buffer("input_std", torch.ones(state_dim + action_dim))
+        self.register_buffer("target_mean", torch.zeros(state_dim + 1))
+        self.register_buffer("target_std", torch.ones(state_dim + 1))
+        self.register_buffer("_normalizer_ready", torch.tensor(False))
+
+    @torch.no_grad()
+    def update_normalizer(self, state: torch.Tensor, action: torch.Tensor, target: torch.Tensor) -> None:
+        if not self.normalize_inputs_targets:
+            return
+        x = torch.cat([state, action], dim=-1)
+        x_mean = x.mean(dim=0)
+        x_std = x.std(dim=0, unbiased=False).clamp_min(self.normalizer_eps)
+        y_mean = target.mean(dim=0)
+        y_std = target.std(dim=0, unbiased=False).clamp_min(self.normalizer_eps)
+
+        if not bool(self._normalizer_ready.item()):
+            self.input_mean.copy_(x_mean)
+            self.input_std.copy_(x_std)
+            self.target_mean.copy_(y_mean)
+            self.target_std.copy_(y_std)
+            self._normalizer_ready.fill_(True)
+            return
+
+        m = self.normalizer_momentum
+        self.input_mean.mul_(1.0 - m).add_(m * x_mean)
+        self.input_std.mul_(1.0 - m).add_(m * x_std)
+        self.target_mean.mul_(1.0 - m).add_(m * y_mean)
+        self.target_std.mul_(1.0 - m).add_(m * y_std)
+
+    def _normalize_inputs(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        if not self.normalize_inputs_targets:
+            return state, action
+        x = torch.cat([state, action], dim=-1)
+        x_norm = (x - self.input_mean) / self.input_std.clamp_min(self.normalizer_eps)
+        return x_norm[..., : self.state_dim], x_norm[..., self.state_dim :]
+
+    def _normalize_target(self, target: torch.Tensor) -> torch.Tensor:
+        if not self.normalize_inputs_targets:
+            return target
+        return (target - self.target_mean) / self.target_std.clamp_min(self.normalizer_eps)
+
+    def _denormalize_target(self, target_norm: torch.Tensor) -> torch.Tensor:
+        if not self.normalize_inputs_targets:
+            return target_norm
+        return target_norm * self.target_std + self.target_mean
 
     @torch.no_grad()
     def predict(self, state: torch.Tensor, action: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -158,7 +210,15 @@ class DynamicsEnsemble(nn.Module):
             mask = idx == i
             if not torch.any(mask):
                 continue
-            ns, r, term_prob = model.sample_prediction(state[mask], action[mask])
+            s_in, a_in = self._normalize_inputs(state[mask], action[mask])
+            mu, log_std, term_logit = model(s_in, a_in)
+            std = torch.exp(log_std)
+            y_norm = mu + std * torch.randn_like(std)
+            y = self._denormalize_target(y_norm)
+            delta = y[..., : self.state_dim]
+            r = y[..., self.state_dim :]
+            ns = state[mask] + delta
+            term_prob = torch.sigmoid(term_logit)
             next_states[mask] = ns
             rewards[mask] = r
             terminated_probs[mask] = term_prob
@@ -173,7 +233,12 @@ class DynamicsEnsemble(nn.Module):
         """
         errs = []
         for model in self.models:
-            ns_mu, r_mu, _ = model.mean_prediction(state, action)
+            s_in, a_in = self._normalize_inputs(state, action)
+            mu, _, _ = model(s_in, a_in)
+            mu = self._denormalize_target(mu)
+            delta_mu = mu[..., : self.state_dim]
+            r_mu = mu[..., self.state_dim :]
+            ns_mu = state + delta_mu
             mse_s = F.mse_loss(ns_mu, next_state, reduction="mean")
             mse_r = F.mse_loss(r_mu, reward, reduction="mean")
             errs.append(mse_s + mse_r)
@@ -208,6 +273,7 @@ def train_dynamics_ensemble(
     # target y = [delta_state, reward] from replay buffer
     delta_target = next_state - state
     y = torch.cat([delta_target, reward], dim=-1)
+    ensemble.update_normalizer(state, action, y)
 
     # Simple train/val split from the same batch:
     # - train split: optimize NLL
@@ -229,6 +295,8 @@ def train_dynamics_ensemble(
         val_idx = perm[train_b:]
 
     s_tr, a_tr, y_tr = state[train_idx], action[train_idx], y[train_idx]
+    s_tr_in, a_tr_in = ensemble._normalize_inputs(s_tr, a_tr)
+    y_tr_norm = ensemble._normalize_target(y_tr)
     done_tr = done[train_idx]
     s_val, a_val = state[val_idx], action[val_idx]
     ns_val, r_val = next_state[val_idx], reward[val_idx]
@@ -245,7 +313,7 @@ def train_dynamics_ensemble(
     mu_rewards = []
 
     for model in ensemble.models:
-        mu, log_std, term_logit = model(s_tr, a_tr)  # (B, D), (B, D), (B, 1)
+        mu, log_std, term_logit = model(s_tr_in, a_tr_in)  # (B, D), (B, D), (B, 1)
         std = torch.exp(log_std)
         # Gaussian NLL (diagonal), ignore constant term
         # nll = 0.5 * [ ((y-mu)/std)^2 + 2*log_std ]
@@ -254,7 +322,7 @@ def train_dynamics_ensemble(
         # - +1e-8: avoids division by zero
         # Note: nll is still (B, D) before reduction.
 
-        nll = 0.5 * (((y_tr - mu) / (std + 1e-8)).pow(2) + 2.0 * log_std)
+        nll = 0.5 * (((y_tr_norm - mu) / (std + 1e-8)).pow(2) + 2.0 * log_std)
         nll = nll.mean()
         nll_sum = nll_sum + nll
 
@@ -269,7 +337,9 @@ def train_dynamics_ensemble(
         # and compare against ground-truth next_state/reward stored in the replay buffer.
         # Metrics do not participate in total_loss, so avoid building computation graphs here.
         with torch.no_grad():
-            mu_full, log_std_full, _ = model(state, action)
+            s_full_in, a_full_in = ensemble._normalize_inputs(state, action)
+            mu_full, log_std_full, _ = model(s_full_in, a_full_in)
+            mu_full = ensemble._denormalize_target(mu_full)
             delta_mu = mu_full[..., : ensemble.state_dim]
             r_mu = mu_full[..., ensemble.state_dim :]
             ns_mu = state + delta_mu

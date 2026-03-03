@@ -263,7 +263,10 @@ class ExperimentConfig:
     horizon: int = 5
     dreamer_arch: str = "MLP"
     mbpo_model_train_steps_per_env_step: int = 1
-    mbpo_synthetic_updates_per_env_step: int = 1
+    mbpo_synthetic_updates_per_env_step: int = 20
+    mbpo_synthetic_warmup_steps: int = 5000
+    mbpo_model_weight_decay: float = 1e-4
+    mbpo_model_normalize: bool = True
     mbpo_ensemble_size: int = 7
     mbpo_top_k: int = 5
     mbpo_start_state_recent_frac: float = 0.25
@@ -345,7 +348,20 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--horizon", type=int, default=5)
     p.add_argument("--dreamer-arch", type=str, default="MLP")
     p.add_argument("--mbpo-model-steps", type=int, default=1)
-    p.add_argument("--mbpo-synth-updates", type=int, default=1)
+    p.add_argument("--mbpo-synth-updates", type=int, default=20)
+    p.add_argument(
+        "--mbpo-synthetic-warmup-steps",
+        type=int,
+        default=5000,
+        help="Delay synthetic policy updates until this env step (model warm-up).",
+    )
+    p.add_argument("--mbpo-model-weight-decay", type=float, default=1e-4)
+    p.add_argument(
+        "--mbpo-model-normalize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize MBPO model inputs/targets with running mean/std.",
+    )
     p.add_argument("--mbpo-ensemble-size", type=int, default=7)
     p.add_argument("--mbpo-top-k", type=int, default=5)
     p.add_argument(
@@ -496,6 +512,9 @@ def parse_args() -> ExperimentConfig:
         dreamer_arch=args.dreamer_arch,
         mbpo_model_train_steps_per_env_step=args.mbpo_model_steps,
         mbpo_synthetic_updates_per_env_step=args.mbpo_synth_updates,
+        mbpo_synthetic_warmup_steps=int(args.mbpo_synthetic_warmup_steps),
+        mbpo_model_weight_decay=float(args.mbpo_model_weight_decay),
+        mbpo_model_normalize=bool(args.mbpo_model_normalize),
         mbpo_ensemble_size=args.mbpo_ensemble_size,
         mbpo_top_k=args.mbpo_top_k,
         mbpo_start_state_recent_frac=float(args.mbpo_start_state_recent_frac),
@@ -869,6 +888,8 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             horizon=cfg.horizon,
             model_ensemble_size=cfg.mbpo_ensemble_size,
             model_top_k=cfg.mbpo_top_k,
+            model_weight_decay=cfg.mbpo_model_weight_decay,
+            model_normalize=cfg.mbpo_model_normalize,
             model_train_steps_per_env_step=cfg.mbpo_model_train_steps_per_env_step,
             synthetic_updates_per_env_step=cfg.mbpo_synthetic_updates_per_env_step,
             start_state_recent_frac=cfg.mbpo_start_state_recent_frac,
@@ -944,9 +965,11 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             # Elite indices are a list; log as a string for readability.
             loss_dict["model/selected_model_indices"] = str(model_stats.selected_model_indices)
 
-            # synthetic SAC updates
-            syn_losses = agent.train_policy_on_synthetic(replay_buffer, batch_size=cfg.batch_size)
-            loss_dict.update({f"synthetic/{k}": v for k, v in syn_losses.items()})
+            # synthetic SAC updates (after model warm-up period)
+            synthetic_start_step = max(int(cfg.replay_prefill_steps), int(cfg.mbpo_synthetic_warmup_steps))
+            if step >= synthetic_start_step:
+                syn_losses = agent.train_policy_on_synthetic(replay_buffer, batch_size=cfg.batch_size)
+                loss_dict.update({f"synthetic/{k}": v for k, v in syn_losses.items()})
 
         if episode_end or ep_steps >= cfg.episode_max_steps:
             obs, _ = env.reset()
