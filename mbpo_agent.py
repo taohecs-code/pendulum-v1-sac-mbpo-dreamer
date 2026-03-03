@@ -281,6 +281,7 @@ class MBPOAgent:
             "mbpo_cfg": {
                 "horizon": self.cfg.horizon,
                 "model_ensemble_size": self.cfg.model_ensemble_size,
+                "model_top_k": self.cfg.model_top_k,
                 "model_hidden_dim": self.cfg.model_hidden_dim,
                 "model_lr": self.cfg.model_lr,
                 "model_train_steps_per_env_step": self.cfg.model_train_steps_per_env_step,
