@@ -114,7 +114,13 @@ def format_eta(seconds: float) -> str:
     return f"{s}s"
 
 
-def make_run_name(algo: str, seed: int, horizon: Optional[int] = None, arch: Optional[str] = None) -> str:
+def make_run_name(
+    algo: str,
+    seed: int,
+    horizon: Optional[int] = None,
+    arch: Optional[str] = None,
+    suffix: Optional[str] = None,
+) -> str:
     algo = algo.upper()
     parts = [algo]
     if algo == "SAC":
@@ -123,8 +129,24 @@ def make_run_name(algo: str, seed: int, horizon: Optional[int] = None, arch: Opt
         parts.append(f"Horizon{horizon}")
     if arch is not None and algo == "DREAMER":
         parts.append(arch)
+    if suffix:
+        parts.append(suffix)
     parts.append(f"Seed{seed}")
     return "_".join(parts)
+
+
+def build_run_name_suffix(cfg: "ExperimentConfig") -> Optional[str]:
+    """
+    Build a short run-name suffix for key debug knobs.
+    """
+    bits = []
+    if str(cfg.algo).lower() == "sac":
+        if bool(getattr(cfg, "sac_auto_alpha", False)):
+            bits.append("AutoAlpha")
+        te = getattr(cfg, "sac_target_entropy", None)
+        if te is not None:
+            bits.append(f"TE{float(te):g}")
+    return "-".join(bits) if bits else None
 
 
 def evaluate_policy(
@@ -426,7 +448,13 @@ def init_wandb(cfg: ExperimentConfig, seed: int) -> Any:
             "- In Colab: run `wandb login` once (or set `WANDB_API_KEY`)."
         )
 
-    run_name = make_run_name(cfg.algo, seed, horizon=cfg.horizon, arch=cfg.dreamer_arch)
+    run_name = make_run_name(
+        cfg.algo,
+        seed,
+        horizon=cfg.horizon,
+        arch=cfg.dreamer_arch,
+        suffix=build_run_name_suffix(cfg),
+    )
     config_dict = dataclasses.asdict(cfg)
     config_dict["seed"] = seed
     config_dict["run_name"] = run_name
