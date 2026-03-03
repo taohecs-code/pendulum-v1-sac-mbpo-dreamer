@@ -24,6 +24,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 
+from buffer import ReplayBuffer
 from sac_agent import SACAgent, SACConfig
 from mbpo_models import DynamicsEnsemble, ModelTrainStats, train_dynamics_ensemble
 
@@ -40,6 +41,14 @@ class MBPOConfig:
     # Start-state sampling for model rollouts:
     # sample s0 from the most recent fraction of replay (MBPO-style).
     start_state_recent_frac: float = 0.25
+    # Whether to keep post-termination absorbing transitions in synthetic batch.
+    # False (default): drop post-done absorbing tuples to improve effective sample usage.
+    keep_absorbing_post_done: bool = False
+    # Whether to store synthetic transitions in a dedicated replay buffer and
+    # train SAC from that buffer (MBPO-style, improves synthetic data reuse).
+    use_synthetic_buffer: bool = True
+    synthetic_buffer_size: int = 200000
+    synthetic_min_size: int = 256
     # Which replay signal trains the terminal head / synthetic done:
     # - "terminated": done_for_learning (physics terminal only)
     # - "episode_end": terminated OR truncated (finite-horizon / time-limit as terminal)
@@ -79,6 +88,14 @@ class MBPOAgent:
 
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.synthetic_buffer: Optional[ReplayBuffer] = None
+        if bool(getattr(self.cfg, "use_synthetic_buffer", True)):
+            self.synthetic_buffer = ReplayBuffer(
+                state_dim=state_dim,
+                action_dim=action_dim,
+                max_size=max(1, int(getattr(self.cfg, "synthetic_buffer_size", 200000))),
+                device=self.policy.device,
+            )
 
     def select_action(self, state, deterministic: bool = False):
         return self.policy.select_action(state, deterministic=deterministic)
@@ -157,10 +174,8 @@ class MBPOAgent:
         device = self.policy.device
         s = start_states.to(device)
 
-        # These 5 lists collect per-step rollout tuples (s, a, r, s', done).
-        # append one step per loop iteration, then concatenate into a single large batch with
-        # shapes roughly (batch_size * horizon, ...), which is fed into SACAgent.train_from_tensors(...)
-        # for synthetic updates.
+        # These 5 lists collect per-step rollout tuples (s, a, r, s', done), then concatenate
+        # into a single large synthetic batch fed into SACAgent.train_from_tensors(...).
         batch_states = []
         batch_actions = []
         batch_rewards = []
@@ -185,11 +200,23 @@ class MBPOAgent:
             ns = torch.where(already_done, st, ns_pred)
             r = torch.where(already_done, torch.zeros_like(r_pred), r_pred)
 
-            batch_states.append(st)
-            batch_actions.append(a_t)
-            batch_rewards.append(r)
-            batch_next_states.append(ns)
-            batch_dones.append(done_t)
+            if bool(getattr(self.cfg, "keep_absorbing_post_done", False)):
+                batch_states.append(st)
+                batch_actions.append(a_t)
+                batch_rewards.append(r)
+                batch_next_states.append(ns)
+                batch_dones.append(done_t)
+            else:
+                # Keep transitions only for trajectories that are still alive at step start.
+                # Newly terminated transitions of this step are kept; only post-done absorbing
+                # tails are dropped.
+                alive_mask = (~already_done).squeeze(-1)
+                if torch.any(alive_mask):
+                    batch_states.append(st[alive_mask])
+                    batch_actions.append(a_t[alive_mask])
+                    batch_rewards.append(r[alive_mask])
+                    batch_next_states.append(ns[alive_mask])
+                    batch_dones.append(done_t[alive_mask])
 
             s = ns
             done_so_far = done_t
@@ -215,6 +242,7 @@ class MBPOAgent:
         """
         n_updates = max(1, int(self.cfg.synthetic_updates_per_env_step))
         acc: Dict[str, float] = {}
+        n_effective_updates = 0
         for _ in range(n_updates):
             recent_frac = float(getattr(self.cfg, "start_state_recent_frac", 0.25))
             if hasattr(replay_buffer, "sample_recent_states"):
@@ -224,10 +252,29 @@ class MBPOAgent:
                 state, _, _, _, _ = replay_buffer.sample(batch_size)
                 s0 = state.to(self.policy.device)
             syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)
-            last = self.policy.train_from_tensors(*syn_batch)
+            if bool(getattr(self.cfg, "use_synthetic_buffer", True)) and self.synthetic_buffer is not None:
+                s, a, r, ns, d = syn_batch
+                s_np = s.detach().cpu().numpy()
+                a_np = a.detach().cpu().numpy()
+                r_np = r.detach().cpu().numpy()
+                ns_np = ns.detach().cpu().numpy()
+                d_np = d.detach().cpu().numpy()
+                for i in range(s_np.shape[0]):
+                    self.synthetic_buffer.add(
+                        s_np[i], a_np[i], r_np[i], ns_np[i], d_np[i], episode_end=float(d_np[i, 0])
+                    )
+                if self.synthetic_buffer.size < max(1, int(getattr(self.cfg, "synthetic_min_size", batch_size))):
+                    continue
+                syn_train_batch = self.synthetic_buffer.sample(batch_size)
+                last = self.policy.train_from_tensors(*syn_train_batch)
+            else:
+                last = self.policy.train_from_tensors(*syn_batch)
+            n_effective_updates += 1
             for k, v in last.items():
                 acc[k] = float(acc.get(k, 0.0) + float(v))
-        return {k: v / float(n_updates) for k, v in acc.items()}
+        if n_effective_updates == 0:
+            return {}
+        return {k: v / float(n_effective_updates) for k, v in acc.items()}
 
     def get_state(self) -> Dict[str, Any]:
         return {
@@ -239,6 +286,10 @@ class MBPOAgent:
                 "model_train_steps_per_env_step": self.cfg.model_train_steps_per_env_step,
                 "synthetic_updates_per_env_step": self.cfg.synthetic_updates_per_env_step,
                 "start_state_recent_frac": float(getattr(self.cfg, "start_state_recent_frac", 0.25)),
+                "keep_absorbing_post_done": bool(getattr(self.cfg, "keep_absorbing_post_done", False)),
+                "use_synthetic_buffer": bool(getattr(self.cfg, "use_synthetic_buffer", True)),
+                "synthetic_buffer_size": int(getattr(self.cfg, "synthetic_buffer_size", 200000)),
+                "synthetic_min_size": int(getattr(self.cfg, "synthetic_min_size", 256)),
                 "terminal_target": str(getattr(self.cfg, "terminal_target", "terminated")),
             },
             "policy": self.policy.get_state(),

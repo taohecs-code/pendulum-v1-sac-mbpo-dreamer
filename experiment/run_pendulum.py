@@ -259,6 +259,10 @@ class ExperimentConfig:
     mbpo_ensemble_size: int = 7
     mbpo_top_k: int = 5
     mbpo_start_state_recent_frac: float = 0.25
+    mbpo_keep_absorbing_post_done: bool = False
+    mbpo_use_synthetic_buffer: bool = True
+    mbpo_synthetic_buffer_size: int = 200000
+    mbpo_synthetic_min_size: int = 256
     mbpo_terminal_target: str = "terminated"
 
     dreamer_seq_len: int = DREAMER_SEQ_LEN_DEFAULT
@@ -342,6 +346,20 @@ def parse_args() -> ExperimentConfig:
         default=0.25,
         help="Sample MBPO synthetic rollout start states from the most recent replay fraction.",
     )
+    p.add_argument(
+        "--mbpo-keep-absorbing-post-done",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Keep post-done absorbing synthetic transitions (default: false, drop for better batch efficiency).",
+    )
+    p.add_argument(
+        "--mbpo-use-synthetic-buffer",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use a dedicated synthetic replay buffer for MBPO policy updates.",
+    )
+    p.add_argument("--mbpo-synthetic-buffer-size", type=int, default=200000)
+    p.add_argument("--mbpo-synthetic-min-size", type=int, default=256)
     p.add_argument(
         "--mbpo-terminal-target",
         type=str,
@@ -473,6 +491,10 @@ def parse_args() -> ExperimentConfig:
         mbpo_ensemble_size=args.mbpo_ensemble_size,
         mbpo_top_k=args.mbpo_top_k,
         mbpo_start_state_recent_frac=float(args.mbpo_start_state_recent_frac),
+        mbpo_keep_absorbing_post_done=bool(args.mbpo_keep_absorbing_post_done),
+        mbpo_use_synthetic_buffer=bool(args.mbpo_use_synthetic_buffer),
+        mbpo_synthetic_buffer_size=int(args.mbpo_synthetic_buffer_size),
+        mbpo_synthetic_min_size=int(args.mbpo_synthetic_min_size),
         mbpo_terminal_target=str(args.mbpo_terminal_target),
         dreamer_seq_len=args.dreamer_seq_len,
         dreamer_kl_beta=float(args.dreamer_kl_beta),
@@ -842,6 +864,10 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             model_train_steps_per_env_step=cfg.mbpo_model_train_steps_per_env_step,
             synthetic_updates_per_env_step=cfg.mbpo_synthetic_updates_per_env_step,
             start_state_recent_frac=cfg.mbpo_start_state_recent_frac,
+            keep_absorbing_post_done=cfg.mbpo_keep_absorbing_post_done,
+            use_synthetic_buffer=cfg.mbpo_use_synthetic_buffer,
+            synthetic_buffer_size=cfg.mbpo_synthetic_buffer_size,
+            synthetic_min_size=cfg.mbpo_synthetic_min_size,
             terminal_target=cfg.mbpo_terminal_target,
         ),
     )
