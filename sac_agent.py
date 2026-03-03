@@ -219,7 +219,7 @@ class SACAgent:
         alpha_loss = None
         if self.auto_alpha and self.alpha_optimizer is not None and self.log_alpha is not None:
             # Use the current policy log_prob; detach so alpha update doesn't backprop into actor.
-            alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
+            alpha_loss = -(self.log_alpha.exp() * (log_prob.detach() + self.target_entropy)).mean()
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
