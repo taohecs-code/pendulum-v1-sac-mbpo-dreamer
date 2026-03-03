@@ -76,6 +76,9 @@ class DreamerConfig:
 
     # Actor regularization (optional).
     actor_entropy_coef: float = 0.0
+    wm_grad_clip_norm: float | None = None
+    actor_grad_clip_norm: float | None = None
+    critic_grad_clip_norm: float | None = None
 
     gamma: float = 0.99
 

@@ -29,6 +29,8 @@ class SACConfig:
     alpha: float = 0.2
     auto_alpha: bool = False
     target_entropy: float | None = None  # if None, default to -|A|
+    grad_clip_norm_actor: float | None = None
+    grad_clip_norm_critic: float | None = None
 
     # Action mapping: a = tanh(u) * scale + bias
     action_scale: float | torch.Tensor = 1.0
@@ -97,6 +99,16 @@ class SACAgent:
         self.tau = float(self.cfg.tau)
         self.alpha = float(self.cfg.alpha)
         self.auto_alpha = bool(self.cfg.auto_alpha)
+        self.grad_clip_norm_actor = (
+            float(self.cfg.grad_clip_norm_actor)
+            if self.cfg.grad_clip_norm_actor is not None
+            else None
+        )
+        self.grad_clip_norm_critic = (
+            float(self.cfg.grad_clip_norm_critic)
+            if self.cfg.grad_clip_norm_critic is not None
+            else None
+        )
 
         # Common default in SAC-v2: target_entropy = -|A|
         self.target_entropy = (
@@ -198,6 +210,8 @@ class SACAgent:
         self.critic_optimizer.zero_grad()
         
         critic_loss.backward()
+        if self.grad_clip_norm_critic is not None and self.grad_clip_norm_critic > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.grad_clip_norm_critic)
         
         self.critic_optimizer.step()
 
@@ -212,6 +226,8 @@ class SACAgent:
         self.actor_optimizer.zero_grad()
 
         actor_loss.backward()
+        if self.grad_clip_norm_actor is not None and self.grad_clip_norm_actor > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.grad_clip_norm_actor)
 
         self.actor_optimizer.step()
 
@@ -247,6 +263,8 @@ class SACAgent:
                 "auto_alpha": bool(self.auto_alpha),
                 # store the resolved value (could be auto default)
                 "target_entropy": float(self.target_entropy),
+                "grad_clip_norm_actor": self.grad_clip_norm_actor,
+                "grad_clip_norm_critic": self.grad_clip_norm_critic,
                 "action_scale": (
                     self.action_scale.detach().cpu().tolist()
                     if isinstance(self.action_scale, torch.Tensor)
@@ -274,6 +292,8 @@ class SACAgent:
             "alpha": self.alpha,
             "auto_alpha": self.auto_alpha,
             "target_entropy": self.target_entropy,
+            "grad_clip_norm_actor": self.grad_clip_norm_actor,
+            "grad_clip_norm_critic": self.grad_clip_norm_critic,
             "device": str(self.device),
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
@@ -298,6 +318,8 @@ class SACAgent:
                 alpha=float(cfg_dict.get("alpha", 0.2)),
                 auto_alpha=bool(cfg_dict.get("auto_alpha", False)),
                 target_entropy=float(cfg_dict.get("target_entropy", -float(self.action_dim))),
+                grad_clip_norm_actor=cfg_dict.get("grad_clip_norm_actor", None),
+                grad_clip_norm_critic=cfg_dict.get("grad_clip_norm_critic", None),
                 action_scale=cfg_dict.get("action_scale", 1.0),
                 action_bias=cfg_dict.get("action_bias", 0.0),
             )
@@ -309,6 +331,8 @@ class SACAgent:
                 alpha=float(state.get("alpha", 0.2)),
                 auto_alpha=bool(state.get("auto_alpha", False)),
                 target_entropy=state.get("target_entropy", -float(self.action_dim)),
+                grad_clip_norm_actor=state.get("grad_clip_norm_actor", None),
+                grad_clip_norm_critic=state.get("grad_clip_norm_critic", None),
                 action_scale=state.get("action_scale", 1.0),
                 action_bias=state.get("action_bias", 0.0),
             )
@@ -320,6 +344,16 @@ class SACAgent:
         self.tau = float(self.cfg.tau)
         self.alpha = float(self.cfg.alpha)
         self.auto_alpha = bool(self.cfg.auto_alpha)
+        self.grad_clip_norm_actor = (
+            float(self.cfg.grad_clip_norm_actor)
+            if self.cfg.grad_clip_norm_actor is not None
+            else None
+        )
+        self.grad_clip_norm_critic = (
+            float(self.cfg.grad_clip_norm_critic)
+            if self.cfg.grad_clip_norm_critic is not None
+            else None
+        )
         self.target_entropy = (
             float(self.cfg.target_entropy) if self.cfg.target_entropy is not None else -float(self.action_dim)
         )

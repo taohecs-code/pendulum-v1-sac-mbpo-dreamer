@@ -259,6 +259,9 @@ class DreamerAgent:
 
         self.wm_opt.zero_grad()
         total_loss.backward()
+        wm_grad_clip_norm = getattr(self.cfg, "wm_grad_clip_norm", None)
+        if wm_grad_clip_norm is not None and float(wm_grad_clip_norm) > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.wm.parameters(), max_norm=float(wm_grad_clip_norm))
         self.wm_opt.step()
 
         # Dual update for kl_beta (keeps raw KL near target_kl).
@@ -394,6 +397,9 @@ class DreamerAgent:
 
             self.actor_opt.zero_grad()
             actor_loss.backward()
+            actor_grad_clip_norm = getattr(self.cfg, "actor_grad_clip_norm", None)
+            if actor_grad_clip_norm is not None and float(actor_grad_clip_norm) > 0.0:
+                torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=float(actor_grad_clip_norm))
             self.actor_opt.step()
         finally:
             _set_requires_grad(self.wm, True)
@@ -426,6 +432,9 @@ class DreamerAgent:
         value_loss = F.mse_loss(value_pred_seq, target_returns)
         self.critic_opt.zero_grad()
         value_loss.backward()
+        critic_grad_clip_norm = getattr(self.cfg, "critic_grad_clip_norm", None)
+        if critic_grad_clip_norm is not None and float(critic_grad_clip_norm) > 0.0:
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=float(critic_grad_clip_norm))
         self.critic_opt.step()
 
         # Soft update target value network for stability.
@@ -467,6 +476,9 @@ class DreamerAgent:
                 "target_tau": self.cfg.target_tau,
                 "lambda_": float(getattr(self.cfg, "lambda_", 0.95)),
                 "actor_entropy_coef": float(getattr(self.cfg, "actor_entropy_coef", 0.0)),
+                "wm_grad_clip_norm": getattr(self.cfg, "wm_grad_clip_norm", None),
+                "actor_grad_clip_norm": getattr(self.cfg, "actor_grad_clip_norm", None),
+                "critic_grad_clip_norm": getattr(self.cfg, "critic_grad_clip_norm", None),
                 "gamma": self.cfg.gamma,
             },
             "kl_beta_value": float(self._kl_beta_value),

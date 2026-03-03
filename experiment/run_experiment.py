@@ -280,10 +280,14 @@ class ExperimentConfig:
     dreamer_target_tau: float = 0.01
     dreamer_lambda: float = 0.95
     dreamer_actor_entropy_coef: float = 0.0
+    dreamer_wm_grad_clip_norm: Optional[float] = None
+    dreamer_actor_grad_clip_norm: Optional[float] = None
+    dreamer_critic_grad_clip_norm: Optional[float] = None
 
     # SAC extras
     sac_auto_alpha: bool = False
     sac_target_entropy: Optional[float] = None
+    sac_grad_clip_norm: Optional[float] = None
 
     # W&B
     use_wandb: bool = True
@@ -380,6 +384,30 @@ def parse_args() -> ExperimentConfig:
     # SAC extras
     p.add_argument("--sac-auto-alpha", action="store_true")
     p.add_argument("--sac-target-entropy", type=float, default=None)
+    p.add_argument(
+        "--sac-grad-clip-norm",
+        type=float,
+        default=None,
+        help="Global grad clipping norm for SAC actor and critic (None to disable).",
+    )
+    p.add_argument(
+        "--dreamer-wm-grad-clip-norm",
+        type=float,
+        default=None,
+        help="Grad clipping norm for Dreamer world model optimizer (None to disable).",
+    )
+    p.add_argument(
+        "--dreamer-actor-grad-clip-norm",
+        type=float,
+        default=None,
+        help="Grad clipping norm for Dreamer actor optimizer (None to disable).",
+    )
+    p.add_argument(
+        "--dreamer-critic-grad-clip-norm",
+        type=float,
+        default=None,
+        help="Grad clipping norm for Dreamer critic optimizer (None to disable).",
+    )
 
     p.add_argument("--no-wandb", action="store_true")
     p.add_argument("--wandb-project", type=str, default="CS5180_Pendulum_MBRL")
@@ -434,8 +462,12 @@ def parse_args() -> ExperimentConfig:
         dreamer_target_tau=float(args.dreamer_target_tau),
         dreamer_lambda=float(args.dreamer_lambda),
         dreamer_actor_entropy_coef=float(args.dreamer_actor_entropy_coef),
+        dreamer_wm_grad_clip_norm=args.dreamer_wm_grad_clip_norm,
+        dreamer_actor_grad_clip_norm=args.dreamer_actor_grad_clip_norm,
+        dreamer_critic_grad_clip_norm=args.dreamer_critic_grad_clip_norm,
         sac_auto_alpha=bool(args.sac_auto_alpha),
         sac_target_entropy=args.sac_target_entropy,
+        sac_grad_clip_norm=args.sac_grad_clip_norm,
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
@@ -491,6 +523,8 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         action_bias=action_bias,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
+        grad_clip_norm_actor=cfg.sac_grad_clip_norm,
+        grad_clip_norm_critic=cfg.sac_grad_clip_norm,
     )
     agent = SACAgent(state_dim, action_dim, device=device, cfg=sac_cfg)
     replay_buffer = ReplayBuffer(state_dim, action_dim, device=device)
@@ -748,6 +782,8 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         action_bias=action_bias,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
+        grad_clip_norm_actor=cfg.sac_grad_clip_norm,
+        grad_clip_norm_critic=cfg.sac_grad_clip_norm,
     )
     agent = MBPOAgent(
         state_dim,
@@ -1058,6 +1094,9 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             target_tau=cfg.dreamer_target_tau,
             lambda_=cfg.dreamer_lambda,
             actor_entropy_coef=cfg.dreamer_actor_entropy_coef,
+            wm_grad_clip_norm=cfg.dreamer_wm_grad_clip_norm,
+            actor_grad_clip_norm=cfg.dreamer_actor_grad_clip_norm,
+            critic_grad_clip_norm=cfg.dreamer_critic_grad_clip_norm,
         ),
     )
     replay_buffer = ReplayBuffer(obs_dim, action_dim, device=device)
