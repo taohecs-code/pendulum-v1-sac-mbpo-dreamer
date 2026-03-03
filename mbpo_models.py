@@ -267,16 +267,18 @@ def train_dynamics_ensemble(
         # metrics on full batch (use mean prediction)
         # compute MSE using the mean prediction mu (deterministic),
         # and compare against ground-truth next_state/reward stored in the replay buffer.
-        mu_full, log_std_full, _ = model(state, action)
-        delta_mu = mu_full[..., : ensemble.state_dim]
-        r_mu = mu_full[..., ensemble.state_dim :]
-        ns_mu = state + delta_mu
-        mse_s_sum = mse_s_sum + F.mse_loss(ns_mu, next_state, reduction="mean")
-        mse_r_sum = mse_r_sum + F.mse_loss(r_mu, reward, reduction="mean")
-        log_std_sum = log_std_sum + log_std_full.mean()
+        # Metrics do not participate in total_loss, so avoid building computation graphs here.
+        with torch.no_grad():
+            mu_full, log_std_full, _ = model(state, action)
+            delta_mu = mu_full[..., : ensemble.state_dim]
+            r_mu = mu_full[..., ensemble.state_dim :]
+            ns_mu = state + delta_mu
+            mse_s_sum = mse_s_sum + F.mse_loss(ns_mu, next_state, reduction="mean")
+            mse_r_sum = mse_r_sum + F.mse_loss(r_mu, reward, reduction="mean")
+            log_std_sum = log_std_sum + log_std_full.mean()
 
-        mu_deltas.append(delta_mu)
-        mu_rewards.append(r_mu)
+            mu_deltas.append(delta_mu)
+            mu_rewards.append(r_mu)
 
     nll_avg = nll_sum / len(ensemble.models)
     term_bce_avg = term_bce_sum / len(ensemble.models)
