@@ -37,6 +37,9 @@ class MBPOConfig:
     model_lr: float = 1e-3
     model_train_steps_per_env_step: int = 1
     synthetic_updates_per_env_step: int = 1
+    # Start-state sampling for model rollouts:
+    # sample s0 from the most recent fraction of replay (MBPO-style).
+    start_state_recent_frac: float = 0.25
     # Which replay signal trains the terminal head / synthetic done:
     # - "terminated": done_for_learning (physics terminal only)
     # - "episode_end": terminated OR truncated (finite-horizon / time-limit as terminal)
@@ -213,8 +216,13 @@ class MBPOAgent:
         n_updates = max(1, int(self.cfg.synthetic_updates_per_env_step))
         acc: Dict[str, float] = {}
         for _ in range(n_updates):
-            state, _, _, _, _ = replay_buffer.sample(batch_size)
-            s0 = state.to(self.policy.device)
+            recent_frac = float(getattr(self.cfg, "start_state_recent_frac", 0.25))
+            if hasattr(replay_buffer, "sample_recent_states"):
+                s0 = replay_buffer.sample_recent_states(batch_size, recent_frac=recent_frac).to(self.policy.device)
+            else:
+                # Backward compatibility with older replay buffers.
+                state, _, _, _, _ = replay_buffer.sample(batch_size)
+                s0 = state.to(self.policy.device)
             syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)
             last = self.policy.train_from_tensors(*syn_batch)
             for k, v in last.items():
@@ -230,6 +238,7 @@ class MBPOAgent:
                 "model_lr": self.cfg.model_lr,
                 "model_train_steps_per_env_step": self.cfg.model_train_steps_per_env_step,
                 "synthetic_updates_per_env_step": self.cfg.synthetic_updates_per_env_step,
+                "start_state_recent_frac": float(getattr(self.cfg, "start_state_recent_frac", 0.25)),
                 "terminal_target": str(getattr(self.cfg, "terminal_target", "terminated")),
             },
             "policy": self.policy.get_state(),

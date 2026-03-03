@@ -93,6 +93,44 @@ class ReplayBuffer:
             torch.FloatTensor(self.done[ind]).to(self.device)
         )
 
+    def sample_recent_states(self, batch_size: int, recent_frac: float = 0.25):
+        """
+        Sample states from the most recent fraction of the replay buffer.
+
+        Useful for MBPO start-state sampling where recent data is usually closer
+        to the current policy/state distribution.
+        """
+        if self.size <= 0:
+            raise ValueError("Cannot sample from an empty replay buffer.")
+
+        frac = float(np.clip(recent_frac, 1e-6, 1.0))
+        recent_n = max(1, int(np.ceil(self.size * frac)))
+
+        # Build index pool for the latest `recent_n` inserted elements.
+        if self.size < self.max_size:
+            # Buffer not wrapped yet: valid range is [0, size).
+            start = max(0, self.size - recent_n)
+            pool = np.arange(start, self.size, dtype=np.int64)
+        else:
+            # Buffer wrapped: latest element is at (ptr-1), oldest at ptr.
+            start = (self.ptr - recent_n) % self.max_size
+            if start < self.ptr:
+                pool = np.arange(start, self.ptr, dtype=np.int64)
+            elif start > self.ptr:
+                pool = np.concatenate(
+                    [
+                        np.arange(start, self.max_size, dtype=np.int64),
+                        np.arange(0, self.ptr, dtype=np.int64),
+                    ],
+                    axis=0,
+                )
+            else:
+                # recent_n == max_size => entire buffer
+                pool = np.arange(0, self.max_size, dtype=np.int64)
+
+        ind = np.random.choice(pool, size=batch_size, replace=pool.size < batch_size)
+        return torch.FloatTensor(self.state[ind]).to(self.device)
+
     def sample_with_episode_end(self, batch_size: int):
         """
         Sample a random batch and also return `episode_end` (terminated OR truncated).

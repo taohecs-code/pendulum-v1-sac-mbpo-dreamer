@@ -266,6 +266,7 @@ class ExperimentConfig:
     mbpo_synthetic_updates_per_env_step: int = 1
     mbpo_ensemble_size: int = 7
     mbpo_top_k: int = 5
+    mbpo_start_state_recent_frac: float = 0.25
     mbpo_terminal_target: str = "terminated"
 
     dreamer_seq_len: int = DREAMER_SEQ_LEN_DEFAULT
@@ -343,6 +344,12 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--mbpo-synth-updates", type=int, default=1)
     p.add_argument("--mbpo-ensemble-size", type=int, default=7)
     p.add_argument("--mbpo-top-k", type=int, default=5)
+    p.add_argument(
+        "--mbpo-start-state-recent-frac",
+        type=float,
+        default=0.25,
+        help="Sample MBPO synthetic rollout start states from the most recent replay fraction.",
+    )
     p.add_argument(
         "--mbpo-terminal-target",
         type=str,
@@ -473,6 +480,7 @@ def parse_args() -> ExperimentConfig:
         mbpo_synthetic_updates_per_env_step=args.mbpo_synth_updates,
         mbpo_ensemble_size=args.mbpo_ensemble_size,
         mbpo_top_k=args.mbpo_top_k,
+        mbpo_start_state_recent_frac=float(args.mbpo_start_state_recent_frac),
         mbpo_terminal_target=str(args.mbpo_terminal_target),
         dreamer_seq_len=args.dreamer_seq_len,
         dreamer_kl_beta=float(args.dreamer_kl_beta),
@@ -841,6 +849,7 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
             model_top_k=cfg.mbpo_top_k,
             model_train_steps_per_env_step=cfg.mbpo_model_train_steps_per_env_step,
             synthetic_updates_per_env_step=cfg.mbpo_synthetic_updates_per_env_step,
+            start_state_recent_frac=cfg.mbpo_start_state_recent_frac,
             terminal_target=cfg.mbpo_terminal_target,
         ),
     )
