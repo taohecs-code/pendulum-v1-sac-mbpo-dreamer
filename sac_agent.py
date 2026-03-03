@@ -29,6 +29,8 @@ class SACConfig:
     alpha: float = 0.2
     auto_alpha: bool = False
     target_entropy: float | None = None  # if None, default to -|A|
+    alpha_loss_mode: str = "legacy"  # legacy -> log_alpha, standard -> exp(log_alpha)
+    alpha_lr: float | None = None
     grad_clip_norm_actor: float | None = None
     grad_clip_norm_critic: float | None = None
 
@@ -99,6 +101,12 @@ class SACAgent:
         self.tau = float(self.cfg.tau)
         self.alpha = float(self.cfg.alpha)
         self.auto_alpha = bool(self.cfg.auto_alpha)
+        self.alpha_loss_mode = (
+            str(getattr(self.cfg, "alpha_loss_mode", "legacy")).strip().lower() or "legacy"
+        )
+        if self.alpha_loss_mode not in {"legacy", "standard"}:
+            self.alpha_loss_mode = "legacy"
+        self.alpha_lr = float(self.cfg.alpha_lr) if self.cfg.alpha_lr is not None else self.lr
         self.grad_clip_norm_actor = (
             float(self.cfg.grad_clip_norm_actor)
             if self.cfg.grad_clip_norm_actor is not None
@@ -140,7 +148,7 @@ class SACAgent:
                 dtype=torch.float32,
                 requires_grad=True,
             )
-            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.alpha_lr)
         else:
             self.log_alpha = None
             self.alpha_optimizer = None
@@ -235,7 +243,10 @@ class SACAgent:
         alpha_loss = None
         if self.auto_alpha and self.alpha_optimizer is not None and self.log_alpha is not None:
             # Use the current policy log_prob; detach so alpha update doesn't backprop into actor.
-            alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
+            if self.alpha_loss_mode == "standard":
+                alpha_loss = -(self.log_alpha.exp() * (log_prob.detach() + self.target_entropy)).mean()
+            else:
+                alpha_loss = -(self.log_alpha * (log_prob.detach() + self.target_entropy)).mean()
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
@@ -263,6 +274,8 @@ class SACAgent:
                 "auto_alpha": bool(self.auto_alpha),
                 # store the resolved value (could be auto default)
                 "target_entropy": float(self.target_entropy),
+                "alpha_loss_mode": self.alpha_loss_mode,
+                "alpha_lr": self.alpha_lr,
                 "grad_clip_norm_actor": self.grad_clip_norm_actor,
                 "grad_clip_norm_critic": self.grad_clip_norm_critic,
                 "action_scale": (
@@ -292,6 +305,8 @@ class SACAgent:
             "alpha": self.alpha,
             "auto_alpha": self.auto_alpha,
             "target_entropy": self.target_entropy,
+            "alpha_loss_mode": self.alpha_loss_mode,
+            "alpha_lr": self.alpha_lr,
             "grad_clip_norm_actor": self.grad_clip_norm_actor,
             "grad_clip_norm_critic": self.grad_clip_norm_critic,
             "device": str(self.device),
@@ -318,6 +333,8 @@ class SACAgent:
                 alpha=float(cfg_dict.get("alpha", 0.2)),
                 auto_alpha=bool(cfg_dict.get("auto_alpha", False)),
                 target_entropy=float(cfg_dict.get("target_entropy", -float(self.action_dim))),
+                alpha_loss_mode=str(cfg_dict.get("alpha_loss_mode", "legacy")),
+                alpha_lr=cfg_dict.get("alpha_lr", None),
                 grad_clip_norm_actor=cfg_dict.get("grad_clip_norm_actor", None),
                 grad_clip_norm_critic=cfg_dict.get("grad_clip_norm_critic", None),
                 action_scale=cfg_dict.get("action_scale", 1.0),
@@ -331,6 +348,8 @@ class SACAgent:
                 alpha=float(state.get("alpha", 0.2)),
                 auto_alpha=bool(state.get("auto_alpha", False)),
                 target_entropy=state.get("target_entropy", -float(self.action_dim)),
+                alpha_loss_mode=str(state.get("alpha_loss_mode", "legacy")),
+                alpha_lr=state.get("alpha_lr", None),
                 grad_clip_norm_actor=state.get("grad_clip_norm_actor", None),
                 grad_clip_norm_critic=state.get("grad_clip_norm_critic", None),
                 action_scale=state.get("action_scale", 1.0),
@@ -344,6 +363,12 @@ class SACAgent:
         self.tau = float(self.cfg.tau)
         self.alpha = float(self.cfg.alpha)
         self.auto_alpha = bool(self.cfg.auto_alpha)
+        self.alpha_loss_mode = (
+            str(getattr(self.cfg, "alpha_loss_mode", "legacy")).strip().lower() or "legacy"
+        )
+        if self.alpha_loss_mode not in {"legacy", "standard"}:
+            self.alpha_loss_mode = "legacy"
+        self.alpha_lr = float(self.cfg.alpha_lr) if self.cfg.alpha_lr is not None else self.lr
         self.grad_clip_norm_actor = (
             float(self.cfg.grad_clip_norm_actor)
             if self.cfg.grad_clip_norm_actor is not None
@@ -383,7 +408,7 @@ class SACAgent:
                     dtype=torch.float32,
                     requires_grad=True,
                 )
-            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.lr)
+            self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=self.alpha_lr)
             opt_state = state.get("alpha_optimizer", None)
             if opt_state is not None:
                 self.alpha_optimizer.load_state_dict(opt_state)

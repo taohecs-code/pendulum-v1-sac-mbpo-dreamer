@@ -140,9 +140,17 @@ def build_run_name_suffix(cfg: "ExperimentConfig") -> Optional[str]:
     Build a short run-name suffix for key debug knobs.
     """
     bits = []
+    rs = float(getattr(cfg, "reward_scale", 1.0))
+    if abs(rs - 1.0) > 1e-12:
+        bits.append(f"RScale{rs:g}")
     if str(cfg.algo).lower() == "sac":
         if bool(getattr(cfg, "sac_auto_alpha", False)):
             bits.append("AutoAlpha")
+            alpha_mode = str(getattr(cfg, "sac_alpha_loss_mode", "legacy")).strip().lower()
+            bits.append("AlphaStd" if alpha_mode == "standard" else "AlphaLegacy")
+            alpha_lr = getattr(cfg, "sac_alpha_lr", None)
+            if alpha_lr is not None:
+                bits.append(f"AlphaLR{float(alpha_lr):g}")
         te = getattr(cfg, "sac_target_entropy", None)
         if te is not None:
             bits.append(f"TE{float(te):g}")
@@ -229,6 +237,7 @@ class ExperimentConfig:
     episode_max_steps: int = EPISODE_MAX_STEPS_DEFAULT
     replay_prefill_steps: int = REPLAY_PREFILL_STEPS_DEFAULT
     batch_size: int = BATCH_SIZE_DEFAULT
+    reward_scale: float = 1.0
 
     # Evaluation
     eval_frequency_steps: int = EVAL_FREQUENCY_STEPS_DEFAULT
@@ -279,6 +288,8 @@ class ExperimentConfig:
     # SAC extras
     sac_auto_alpha: bool = False
     sac_target_entropy: Optional[float] = None
+    sac_alpha_loss_mode: str = "legacy"
+    sac_alpha_lr: Optional[float] = None
     sac_grad_clip_norm: Optional[float] = None
 
     # W&B
@@ -301,6 +312,12 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--episode-max-steps", type=int, default=EPISODE_MAX_STEPS_DEFAULT)
     p.add_argument("--prefill-steps", type=int, default=REPLAY_PREFILL_STEPS_DEFAULT)
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE_DEFAULT)
+    p.add_argument(
+        "--reward-scale",
+        type=float,
+        default=1.0,
+        help="Scale rewards before writing to replay buffer (training only). Eval uses raw env rewards.",
+    )
 
     p.add_argument("--eval-freq", type=int, default=EVAL_FREQUENCY_STEPS_DEFAULT)
     p.add_argument("--eval-episodes", type=int, default=EVAL_EPISODES_DURING_TRAIN_DEFAULT)
@@ -377,6 +394,19 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--sac-auto-alpha", action="store_true")
     p.add_argument("--sac-target-entropy", type=float, default=None)
     p.add_argument(
+        "--sac-alpha-loss-mode",
+        type=str,
+        choices=("legacy", "standard"),
+        default="legacy",
+        help="Auto-alpha loss form: legacy uses log_alpha, standard uses exp(log_alpha).",
+    )
+    p.add_argument(
+        "--sac-alpha-lr",
+        type=float,
+        default=None,
+        help="Learning rate for alpha optimizer only (defaults to --lr in SACConfig).",
+    )
+    p.add_argument(
         "--sac-grad-clip-norm",
         type=float,
         default=None,
@@ -420,6 +450,7 @@ def parse_args() -> ExperimentConfig:
         episode_max_steps=args.episode_max_steps,
         replay_prefill_steps=args.prefill_steps,
         batch_size=args.batch_size,
+        reward_scale=float(args.reward_scale),
         eval_frequency_steps=args.eval_freq,
         eval_episodes_during_train=args.eval_episodes,
         eval_episodes_final=args.eval_episodes_final,
@@ -459,6 +490,8 @@ def parse_args() -> ExperimentConfig:
         dreamer_critic_grad_clip_norm=args.dreamer_critic_grad_clip_norm,
         sac_auto_alpha=bool(args.sac_auto_alpha),
         sac_target_entropy=args.sac_target_entropy,
+        sac_alpha_loss_mode=str(args.sac_alpha_loss_mode),
+        sac_alpha_lr=args.sac_alpha_lr,
         sac_grad_clip_norm=args.sac_grad_clip_norm,
         use_wandb=not args.no_wandb,
         wandb_project=args.wandb_project,
@@ -515,6 +548,8 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         action_bias=action_bias,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
+        alpha_loss_mode=cfg.sac_alpha_loss_mode,
+        alpha_lr=cfg.sac_alpha_lr,
         grad_clip_norm_actor=cfg.sac_grad_clip_norm,
         grad_clip_norm_critic=cfg.sac_grad_clip_norm,
     )
@@ -551,7 +586,15 @@ def run_sac(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
 
-        replay_buffer.add(obs, action, reward, next_obs, done_for_learning, episode_end=float(episode_end))
+        scaled_reward = float(reward) * float(cfg.reward_scale)
+        replay_buffer.add(
+            obs,
+            action,
+            scaled_reward,
+            next_obs,
+            done_for_learning,
+            episode_end=float(episode_end),
+        )
 
         obs = next_obs
         ep_steps += 1
@@ -774,6 +817,8 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         action_bias=action_bias,
         auto_alpha=cfg.sac_auto_alpha,
         target_entropy=cfg.sac_target_entropy,
+        alpha_loss_mode=cfg.sac_alpha_loss_mode,
+        alpha_lr=cfg.sac_alpha_lr,
         grad_clip_norm_actor=cfg.sac_grad_clip_norm,
         grad_clip_norm_critic=cfg.sac_grad_clip_norm,
     )
@@ -818,7 +863,15 @@ def run_mbpo(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
 
-        replay_buffer.add(obs, action, reward, next_obs, done_for_learning, episode_end=float(episode_end))
+        scaled_reward = float(reward) * float(cfg.reward_scale)
+        replay_buffer.add(
+            obs,
+            action,
+            scaled_reward,
+            next_obs,
+            done_for_learning,
+            episode_end=float(episode_end),
+        )
         obs = next_obs
         ep_steps += 1
 
@@ -1118,7 +1171,15 @@ def run_dreamer(cfg: ExperimentConfig, seed: int) -> Dict[str, Any]:
         next_obs, reward, terminated, truncated, _ = env.step(action)
         done_for_learning = float(terminated)
         episode_end = terminated or truncated
-        replay_buffer.add(obs, action, reward, next_obs, done_for_learning, episode_end=float(episode_end))
+        scaled_reward = float(reward) * float(cfg.reward_scale)
+        replay_buffer.add(
+            obs,
+            action,
+            scaled_reward,
+            next_obs,
+            done_for_learning,
+            episode_end=float(episode_end),
+        )
         obs = next_obs
         ep_steps += 1
 
