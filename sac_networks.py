@@ -2,29 +2,35 @@
 Soft Actor-Critic (SAC) implementation for continuous control tasks.
 Reference: https://arxiv.org/pdf/1801.01290.pdf (and SAC-v2 refinements)
 
-Pendulum-v1 Environment Specifications:
-- State & Action Space: For Pendulum-v1, the Actor network's input state dimension
-  must be 3 (comprising cos(theta), sin(theta), and theta_dot). The output action
-  is a 1D scalar. In general, actions must be scaled/clipped to the environment's
-  action bounds (read from `env.action_space`, not hardcoded).
-
 - Actor Network (Policy Improvement): 
-  Must output a Gaussian policy and apply the reparameterization trick to enable 
-  differentiable sampling. During the Evaluation phase, stochastic sampling must 
-  be disabled, and the network should deterministically output the policy's mean.
+  output a Gaussian policy and apply the reparameterization trick to enable 
+  differentiable sampling. During the Evaluation phase, stochastic sampling is disabled, and the network should deterministically output the policy's mean.
+  be disabled, and the network should deterministically output the 
 
 - Critic Network (Policy Evaluation): 
-  Must utilize a Twin-Q architecture (training two independent Q-networks 
+  utilize a Twin-Q architecture (training two independent Q-networks 
   simultaneously and taking the minimum when computing the TD target) to mitigate 
-  overestimation bias. A separate V-network is explicitly not required.
+  overestimation bias. 
 
 - Network Updates: 
-  The target Critic networks must be smoothly updated using an Exponential Moving 
+  The target Critic networks is smoothly updated using an Exponential Moving 
   Average (EMA, i.e., soft updates).
 
 - Data Initialization: 
   Before formal training loops begin, the agent must interact with the environment 
   using uniformly random actions for 1,000 steps to warm up the Replay Buffer.
+
+comparison with SB3:
+
+- twin-q critic
+- Target Network + Soft Update:  tau=0.005
+- Squashed Gaussian (tanh)
+- log_std clamp: [-20, 2]
+- network: [256, 256]
+- lr: 3e-4
+- gamma: 0.99
+- log mode: legacy
+- critici stable parameters: loss factor=0.5
 """
 
 
@@ -35,33 +41,33 @@ from torch.distributions import Normal
 
 class Actor(nn.Module):
     """
-        Actor Network for Soft Actor-Critic (SAC).
+    Actor Network for Soft Actor-Critic (SAC).
 
-        Unlike deterministic policies (e.g., DDPG) that use argmax or output exact actions,
-        the SAC Actor outputs a stochastic policy modeled as a Gaussian distribution.
+    Unlike deterministic policies (e.g., DDPG) that use argmax or output exact actions,
+    the SAC Actor outputs a stochastic policy modeled as a Gaussian distribution.
 
-        Key Mechanisms:
-        1. Reparameterization Trick: 
-        Samples are drawn in a differentiable way to allow gradients to flow back 
-        from the Critic to the Actor.
-        Formula: u = mean + std * epsilon, where epsilon ~ N(0, 1)
+    Key Mechanisms:
+    1. Reparameterization Trick: 
+    Samples are drawn in a differentiable way to allow gradients to flow back 
+    from the Critic to the Actor.
+    Formula: u = mean + std * epsilon, where epsilon ~ N(0, 1)
 
-        2. Squashed Gaussian (tanh):
-        The raw action 'u' is squashed into a bounded continuous range using tanh.
-        Formula: a = tanh(u)
+    2. Squashed Gaussian (tanh):
+    The raw action 'u' is squashed into a bounded continuous range using tanh.
+    Formula: a = tanh(u)
 
-        3. Maximum Entropy RL:
-        The network outputs the action and its log probability (log_pi). 
-        The log_pi must be mathematically corrected for the tanh squashing.
+    3. Maximum Entropy RL:
+    The network outputs the action and its log probability (log_pi). 
+    The log_pi must be mathematically corrected for the tanh squashing.
 
-        Optimization Details:
-        - Objective: Maximize expected return AND policy entropy.
-        Objective = E [ Q(s, a) - alpha * log_pi(a|s) ]
-        
-        - Loss Function: Since PyTorch minimizes, we negate the objective.
-        The Actor is updated based on the Q-values provided by the frozen Critic.
-        Loss = E [ alpha * log_pi(a|s) - min(Q1(s, a), Q2(s, a)) ]
-        """
+    Optimization Details:
+    - Objective: Maximize expected return AND policy entropy.
+    Objective = E [ Q(s, a) - alpha * log_pi(a|s) ]
+    
+    - Loss Function: Since PyTorch minimizes, we negate the objective.
+    The Actor is updated based on the Q-values provided by the frozen Critic.
+    Loss = E [ alpha * log_pi(a|s) - min(Q1(s, a), Q2(s, a)) ]
+    """
 
     def __init__(
         self,
@@ -71,6 +77,7 @@ class Actor(nn.Module):
         action_scale: float | torch.Tensor = 1.0,
         action_bias: float | torch.Tensor = 0.0,
     ):
+
         super().__init__()
 
         # action_scale rescales tanh-squashed actions from [-1, 1] to the environment action range.

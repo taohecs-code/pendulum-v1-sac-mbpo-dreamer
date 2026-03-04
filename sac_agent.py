@@ -213,7 +213,7 @@ class SACAgent:
         # update the critic network
         current_q1, current_q2 = self.critic(state, action)
 
-        critic_loss = F.mse_loss(current_q1, y.detach()) + F.mse_loss(current_q2, y.detach())
+        critic_loss = 0.5 * (F.mse_loss(current_q1, y.detach()) + F.mse_loss(current_q2, y.detach()))
         
         self.critic_optimizer.zero_grad()
         
