@@ -308,11 +308,10 @@ class MBPOAgent:
             ns_np = ns.detach().cpu().numpy()
             d_np = d.detach().cpu().numpy()
 
-            # add the synthetic batch to the synthetic buffer
-            for i in range(s_np.shape[0]):
-                self.synthetic_buffer.add(
-                    s_np[i], a_np[i], r_np[i], ns_np[i], d_np[i], episode_end=float(d_np[i, 0])
-                )
+            # add the synthetic batch to the synthetic buffer using the fast vectorized method
+            self.synthetic_buffer.add_batch(
+                s_np, a_np, r_np, ns_np, d_np, episode_ends=d_np
+            )
 
         # ================================
         # Train the policy on the synthetic batch.

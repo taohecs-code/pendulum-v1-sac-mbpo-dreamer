@@ -78,6 +78,59 @@ class ReplayBuffer:
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
+    def add_batch(self, states, actions, rewards, next_states, dones, episode_ends=None):
+        """
+        Add a batch of experiences to the buffer efficiently.
+        All inputs should be numpy arrays of shape (batch_size, ...).
+        """
+        batch_size = states.shape[0]
+        if episode_ends is None:
+            episode_ends = dones
+
+        # If the batch is larger than the buffer, only keep the latest max_size elements
+        if batch_size >= self.max_size:
+            self.state[:] = states[-self.max_size:]
+            self.action[:] = actions[-self.max_size:]
+            self.reward[:] = rewards[-self.max_size:]
+            self.next_state[:] = next_states[-self.max_size:]
+            self.done[:] = dones[-self.max_size:]
+            self.episode_end[:] = episode_ends[-self.max_size:]
+            self.ptr = 0
+            self.size = self.max_size
+            return
+
+        # Calculate how many elements we can fit before wrapping around
+        space_left = self.max_size - self.ptr
+        
+        if batch_size <= space_left:
+            # Fits without wrapping
+            self.state[self.ptr : self.ptr + batch_size] = states
+            self.action[self.ptr : self.ptr + batch_size] = actions
+            self.reward[self.ptr : self.ptr + batch_size] = rewards
+            self.next_state[self.ptr : self.ptr + batch_size] = next_states
+            self.done[self.ptr : self.ptr + batch_size] = dones
+            self.episode_end[self.ptr : self.ptr + batch_size] = episode_ends
+            self.ptr = (self.ptr + batch_size) % self.max_size
+        else:
+            # Wraps around
+            self.state[self.ptr : self.max_size] = states[:space_left]
+            self.action[self.ptr : self.max_size] = actions[:space_left]
+            self.reward[self.ptr : self.max_size] = rewards[:space_left]
+            self.next_state[self.ptr : self.max_size] = next_states[:space_left]
+            self.done[self.ptr : self.max_size] = dones[:space_left]
+            self.episode_end[self.ptr : self.max_size] = episode_ends[:space_left]
+            
+            remain = batch_size - space_left
+            self.state[:remain] = states[space_left:]
+            self.action[:remain] = actions[space_left:]
+            self.reward[:remain] = rewards[space_left:]
+            self.next_state[:remain] = next_states[space_left:]
+            self.done[:remain] = dones[space_left:]
+            self.episode_end[:remain] = episode_ends[space_left:]
+            self.ptr = remain
+            
+        self.size = min(self.size + batch_size, self.max_size)
+
     def sample(self, batch_size):
         """
         Sample a random batch of experiences and convert them to PyTorch Tensors.
