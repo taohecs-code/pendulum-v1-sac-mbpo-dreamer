@@ -160,7 +160,7 @@ class MBPOAgent:
             # Unpack the batch.
             state, action, reward, next_state, done_for_learning, episode_end = batch6
             # Determine the terminal target.
-            term_mode = str(getattr(self.cfg, "terminal_target", "terminated"))
+            term_mode = self.cfg.terminal_target
             # Determine the done target.
             done_target = episode_end if term_mode == "episode_end" else done_for_learning
             # Pack the batch into a tuple of 5 tensors: (state, action, reward, next_state, done_target).   
@@ -217,11 +217,22 @@ class MBPOAgent:
         batch_dones = []
         done_so_far = torch.zeros((s.shape[0], 1), device=device, dtype=s.dtype)
 
+        # ================================
+        # Roll out the model for the given horizon.
+        # ================================
         for _ in range(horizon):
+            # current state
             st = s
+            # sample an action from the policy
             action_t, _ = self.policy.actor(st, deterministic=False) 
+            # check if the state is already done
             already_done = done_so_far > 0.5
             a_t = torch.where(already_done.expand_as(action_t), torch.zeros_like(action_t), action_t)
+
+            # *predict the next state and reward
+            # ns_pred: next state prediction
+            # r_pred: reward prediction
+            # done_pred: done prediction
             ns_pred, r_pred, done_pred = self.model.predict(st, a_t)
             done_pred = (done_pred > 0.5).to(dtype=st.dtype)
             done_t = torch.clamp(done_so_far + done_pred, 0.0, 1.0)
@@ -229,7 +240,7 @@ class MBPOAgent:
             ns = torch.where(already_done, st, ns_pred)
             r = torch.where(already_done, torch.zeros_like(r_pred), r_pred)
 
-            if bool(getattr(self.cfg, "keep_absorbing_post_done", False)):
+            if self.cfg.keep_absorbing_post_done:
                 batch_states.append(st)
                 batch_actions.append(a_t)
                 batch_rewards.append(r)
@@ -244,7 +255,9 @@ class MBPOAgent:
                     batch_next_states.append(ns[alive_mask])
                     batch_dones.append(done_t[alive_mask])
 
-            s = ns
+            # pass the next state to the next iteration
+            # s = ns
+            # pass the done to the next iteration
             done_so_far = done_t
 
         # Concatenate the lists into tensors.
@@ -258,20 +271,21 @@ class MBPOAgent:
 
     def train_policy_on_synthetic(self, replay_buffer, batch_size: int) -> Dict[str, float]:
         """
-        Sample start states from the real replay buffer, roll out with the learned model for H steps,
-        then train SAC on the generated synthetic batch.
-
-        Notes:
-        - If synthetic_updates_per_env_step > 1, we re-sample fresh start states for each synthetic update to improve
-          diversity (rather than reusing a single s0 batch).
-        - Synthetic `done` is produced by the dynamics ensemble's terminal head (trained on replay done_for_learning),
-          and an absorbing-state mask is applied after termination.
+        * The most important feature of MBPO.
         """
+
         n_updates = max(1, int(self.cfg.synthetic_updates_per_env_step))
+
         acc: Dict[str, float] = {}
+
         n_effective_updates = 0
+
+        # ================================
+        # Train the policy on the synthetic batch.
+        # ================================
         for _ in range(n_updates):
-            recent_frac = float(getattr(self.cfg, "start_state_recent_frac", 0.25))
+            # Sample start states from the real replay buffer.
+            recent_frac = self.cfg.start_state_recent_frac
             if hasattr(replay_buffer, "sample_recent_states"):
                 s0 = replay_buffer.sample_recent_states(batch_size, recent_frac=recent_frac).to(self.policy.device)
             else:
@@ -279,7 +293,7 @@ class MBPOAgent:
                 state, _, _, _, _ = replay_buffer.sample(batch_size)
                 s0 = state.to(self.policy.device)
             syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)
-            if bool(getattr(self.cfg, "use_synthetic_buffer", True)) and self.synthetic_buffer is not None:
+            if self.cfg.use_synthetic_buffer and self.synthetic_buffer is not None:
                 s, a, r, ns, d = syn_batch
                 s_np = s.detach().cpu().numpy()
                 a_np = a.detach().cpu().numpy()
@@ -290,7 +304,7 @@ class MBPOAgent:
                     self.synthetic_buffer.add(
                         s_np[i], a_np[i], r_np[i], ns_np[i], d_np[i], episode_end=float(d_np[i, 0])
                     )
-                if self.synthetic_buffer.size < max(1, int(getattr(self.cfg, "synthetic_min_size", batch_size))):
+                if self.synthetic_buffer.size < max(1, self.cfg.synthetic_min_size):
                     continue
                 syn_train_batch = self.synthetic_buffer.sample(batch_size)
                 last = self.policy.train_from_tensors(*syn_train_batch)
@@ -301,6 +315,7 @@ class MBPOAgent:
                 acc[k] = float(acc.get(k, 0.0) + float(v))
         if n_effective_updates == 0:
             return {}
+
         return {k: v / float(n_effective_updates) for k, v in acc.items()}
 
     def get_state(self) -> Dict[str, Any]:
