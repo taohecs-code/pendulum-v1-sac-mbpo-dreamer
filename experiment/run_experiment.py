@@ -311,6 +311,7 @@ class ExperimentConfig:
     wandb_entity: Optional[str] = None
     wandb_tags: Tuple[str, ...] = ()
     wandb_group: Optional[str] = None
+    wandb_notes: str = ""
     wandb_artifacts: bool = False
 
 
@@ -469,6 +470,7 @@ def parse_args() -> ExperimentConfig:
     p.add_argument("--wandb-entity", type=str, default=None)
     p.add_argument("--wandb-tags", type=str, default="")
     p.add_argument("--wandb-group", type=str, default=None)
+    p.add_argument("--wandb-notes", type=str, default="", help="Long notes/description for the wandb run.")
     p.add_argument("--wandb-artifacts", action="store_true")
 
     args = p.parse_args()
@@ -536,6 +538,7 @@ def parse_args() -> ExperimentConfig:
         wandb_entity=args.wandb_entity,
         wandb_tags=tags,
         wandb_group=args.wandb_group,
+        wandb_notes=args.wandb_notes,
         wandb_artifacts=bool(args.wandb_artifacts),
     )
 
@@ -567,6 +570,7 @@ def init_wandb(cfg: ExperimentConfig, seed: int) -> Any:
         name=run_name,
         group=cfg.wandb_group,
         tags=list(cfg.wandb_tags),
+        notes=cfg.wandb_notes,
         config=config_dict,
     )
 
