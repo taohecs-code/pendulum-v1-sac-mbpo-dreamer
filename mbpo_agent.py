@@ -272,6 +272,8 @@ class MBPOAgent:
     def train_policy_on_synthetic(self, replay_buffer, batch_size: int) -> Dict[str, float]:
         """
         * The most important feature of MBPO.
+        Train the policy on the synthetic batch.
+        The policy is from SACAgent(train_from_tensors).
         """
 
         n_updates = max(1, int(self.cfg.synthetic_updates_per_env_step))
@@ -281,38 +283,61 @@ class MBPOAgent:
         n_effective_updates = 0
 
         # ================================
+        # Generate synthetic data (Rollout) ONCE per env step
+        # ================================
+        recent_frac = self.cfg.start_state_recent_frac
+        if hasattr(replay_buffer, "sample_recent_states"):
+            s0 = replay_buffer.sample_recent_states(batch_size, recent_frac=recent_frac).to(self.policy.device)
+        else:
+            # Backward compatibility with older replay buffers.
+            state, _, _, _, _ = replay_buffer.sample(batch_size)
+            s0 = state.to(self.policy.device)
+
+        # Roll out the model for the given horizon.
+        syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)  # （s, a, r, s', done）
+
+        # If the synthetic buffer is used, add the synthetic batch to the synthetic buffer.
+        if self.cfg.use_synthetic_buffer and self.synthetic_buffer is not None:
+            # unpack the synthetic batch
+            s, a, r, ns, d = syn_batch
+
+            # convert the synthetic batch to numpy
+            s_np = s.detach().cpu().numpy()
+            a_np = a.detach().cpu().numpy()
+            r_np = r.detach().cpu().numpy()
+            ns_np = ns.detach().cpu().numpy()
+            d_np = d.detach().cpu().numpy()
+
+            # add the synthetic batch to the synthetic buffer
+            for i in range(s_np.shape[0]):
+                self.synthetic_buffer.add(
+                    s_np[i], a_np[i], r_np[i], ns_np[i], d_np[i], episode_end=float(d_np[i, 0])
+                )
+
+        # ================================
         # Train the policy on the synthetic batch.
         # ================================
         for _ in range(n_updates):
-            # Sample start states from the real replay buffer.
-            recent_frac = self.cfg.start_state_recent_frac
-            if hasattr(replay_buffer, "sample_recent_states"):
-                s0 = replay_buffer.sample_recent_states(batch_size, recent_frac=recent_frac).to(self.policy.device)
-            else:
-                # Backward compatibility with older replay buffers.
-                state, _, _, _, _ = replay_buffer.sample(batch_size)
-                s0 = state.to(self.policy.device)
-            syn_batch = self.rollout_model(s0, horizon=self.cfg.horizon)
             if self.cfg.use_synthetic_buffer and self.synthetic_buffer is not None:
-                s, a, r, ns, d = syn_batch
-                s_np = s.detach().cpu().numpy()
-                a_np = a.detach().cpu().numpy()
-                r_np = r.detach().cpu().numpy()
-                ns_np = ns.detach().cpu().numpy()
-                d_np = d.detach().cpu().numpy()
-                for i in range(s_np.shape[0]):
-                    self.synthetic_buffer.add(
-                        s_np[i], a_np[i], r_np[i], ns_np[i], d_np[i], episode_end=float(d_np[i, 0])
-                    )
+                # if the synthetic buffer is not full, continue
                 if self.synthetic_buffer.size < max(1, self.cfg.synthetic_min_size):
                     continue
+
+                # sample a batch from the synthetic buffer
                 syn_train_batch = self.synthetic_buffer.sample(batch_size)
+
+                # train the policy on the synthetic batch
                 last = self.policy.train_from_tensors(*syn_train_batch)
             else:
+                # If not using a buffer, just train on the generated batch directly
+                # (Note: this means all n_updates will use the exact same batch, which might overfit)
                 last = self.policy.train_from_tensors(*syn_batch)
+
             n_effective_updates += 1
+
             for k, v in last.items():
                 acc[k] = float(acc.get(k, 0.0) + float(v))
+
         if n_effective_updates == 0:
             return {}
 
