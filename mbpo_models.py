@@ -291,6 +291,11 @@ def train_dynamics_ensemble(
     perm = torch.randperm(b, device=state.device)
 
     # Split the batch into train and validation sets.
+    # Note (Simplification): 
+    # In the original MBPO implementation, a separate holdout validation set is maintained 
+    # across the entire replay buffer. Here, for simplicity and to avoid complex buffer management, 
+    # we split the current mini-batch (80% train, 20% val) to compute validation MSE and select top-k models.
+    # This may introduce slight bias but is acceptable for this educational/simplified implementation.
     if b < 2:
         train_idx = perm
         val_idx = perm
